@@ -4,6 +4,7 @@
 pub mod breeding;
 pub mod creature;
 pub mod element;
+pub mod farming;
 pub mod habitat;
 
 pub use breeding::{
@@ -13,6 +14,10 @@ pub use creature::{
     CreatureInstance, CreatureSpecies, GrowthStage, Rarity, SpeciesCatalog,
 };
 pub use element::{Element, ElementId, ElementRegistry};
+pub use farming::{
+    CropCatalog, CropType, FarmError, FarmInstance, FarmState, FeedResult, FeedingError,
+    FeedingSystem,
+};
 pub use habitat::{
     HabitatCatalog, HabitatError, HabitatInstance, HabitatTierInfo, HabitatType, IslandGrid,
 };
