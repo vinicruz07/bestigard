@@ -1,0 +1,9 @@
+[package]
+name = "mobile_entry"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+game_core = { path = "../game_core" }
+engine = { path = "../engine" }
