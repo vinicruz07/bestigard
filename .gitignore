@@ -1,0 +1,18 @@
+# Target de compilação do Rust
+/target/
+**/*.rs.bk
+*.pdb
+
+# IDEs e Editores
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Arquivos de controle interno do projeto
+limbo.md
+three.md
+
+# Sistema operacional
+.DS_Store
+Thumbs.db
