@@ -8,6 +8,7 @@ pub mod camera;
 pub mod geometry;
 pub mod graphics;
 pub mod isometric;
+pub mod render;
 pub mod time;
 
 pub use app::{App, EngineConfig, GameState};
@@ -17,4 +18,5 @@ pub use camera::Camera2D;
 pub use geometry::{Point, Rect};
 pub use graphics::{Color, GraphicsContext, Viewport, WindowRunner};
 pub use isometric::IsometricProjection;
+pub use render::{RenderCommand, RenderLayer, RenderQueue};
 pub use time::TimeStep;

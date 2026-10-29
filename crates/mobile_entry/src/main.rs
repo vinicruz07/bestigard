@@ -2,8 +2,8 @@
 #![forbid(unsafe_code)]
 
 use engine::{
-    App, Camera2D, Color, EngineConfig, GameState, IsometricProjection, Rect, SpriteBatch,
-    TextureAtlas,
+    App, Camera2D, Color, EngineConfig, GameState, IsometricProjection, Rect, RenderQueue,
+    SpriteBatch, TextureAtlas,
 };
 use game_core::{
     BattleSession, Combatant, CropCatalog, ElementRegistry, ElementalChart, HabitatCatalog,
@@ -22,6 +22,7 @@ pub struct BestigardGame {
     pub batch: SpriteBatch,
     pub camera: Camera2D,
     pub projection: IsometricProjection,
+    pub render_queue: RenderQueue,
     frames_rendered: u64,
     ticks_processed: u64,
 }
@@ -61,6 +62,7 @@ impl BestigardGame {
             batch: SpriteBatch::new(1024),
             camera,
             projection,
+            render_queue: RenderQueue::new(),
             frames_rendered: 0,
             ticks_processed: 0,
         }
@@ -126,52 +128,82 @@ impl GameState for BestigardGame {
     fn render(&mut self, _alpha: f32) {
         self.frames_rendered += 1;
         self.batch.clear();
+        self.render_queue.clear();
 
-        // 1. Batcheia fundo do santuário
-        self.batch.draw_colored_rect(Rect::new(0.0, 0.0, 1080.0, 1920.0), Color::AETHER_NAVY);
-
-        // 2. Batcheia grade de tiles de terreno com projeção isométrica 2:1 e câmera
+        // 1. Camada de Fundo (Ground): grade de 6x6 tiles isométricos
         if let Some(grass) = self.atlas.get("tile_island_grass_01") {
             for x in 0..6 {
                 for y in 0..6 {
                     let screen_pos = self.camera.grid_to_screen(x as f32, y as f32, &self.projection);
                     let tile_w = self.projection.tile_width * self.camera.zoom;
                     let tile_h = self.projection.tile_height * self.camera.zoom;
-                    let tile_rect = Rect::new(
-                        screen_pos.x - tile_w * 0.5,
-                        screen_pos.y,
-                        tile_w,
-                        tile_h,
-                    );
-                    self.batch.draw_sprite(grass, tile_rect, Color::WHITE);
+                    let tile_rect = Rect::new(screen_pos.x - tile_w * 0.5, screen_pos.y, tile_w, tile_h);
+                    self.render_queue.push_ground(grass.clone(), tile_rect, Color::WHITE);
                 }
             }
         }
 
-        // 3. Batcheia habitats e fazendas
-        if let Some(hab) = self.atlas.get("habitat_fire_t1") {
-            self.batch.draw_sprite(hab, Rect::new(320.0, 460.0, 128.0, 128.0), Color::WHITE);
-        }
-        if let Some(farm) = self.atlas.get("building_farm_empty") {
-            self.batch.draw_sprite(farm, Rect::new(460.0, 460.0, 100.0, 100.0), Color::WHITE);
-        }
+        // 2. Camada de Decalques no Chão (GroundDecal): sombra sob o habitat e construções
+        let hab_screen = self.camera.grid_to_screen(3.0, 3.0, &self.projection);
+        self.render_queue.push_decal(
+            self.atlas.get("tile_island_grass_01").unwrap().clone(),
+            Rect::new(hab_screen.x - 70.0, hab_screen.y + 40.0, 140.0, 30.0),
+            Color::rgba(0.0, 0.0, 0.0, 0.35),
+        );
 
-        // 4. Batcheia criaturas no santuário
-        if let Some(pyro) = self.atlas.get("creature_pyro_drake_baby") {
-            self.batch.draw_sprite(pyro, Rect::new(360.0, 500.0, 48.0, 48.0), Color::WHITE);
-        }
+        // 3. Camada de Entidades com Y-Sorting (Entities):
+        // - Criatura A atrás do habitat (grid 2.5, 2.5 -> depth menor)
         if let Some(volcano) = self.atlas.get("creature_volcano_beast_baby") {
-            self.batch.draw_sprite(volcano, Rect::new(400.0, 510.0, 48.0, 48.0), Color::WHITE);
+            let p = self.camera.grid_to_screen(2.5, 2.5, &self.projection);
+            self.render_queue.push_entity_grid(
+                2.5,
+                2.5,
+                0.0,
+                volcano.clone(),
+                Rect::new(p.x - 24.0, p.y - 30.0, 48.0, 48.0),
+                Color::WHITE,
+            );
         }
 
-        // 5. Batcheia HUD e ícones de recursos
-        self.batch.draw_colored_rect(Rect::new(20.0, 20.0, 1040.0, 80.0), Color::rgba(0.08, 0.12, 0.22, 0.9));
+        // - Habitat no meio (grid 3.0, 3.0 -> depth intermediário)
+        if let Some(hab) = self.atlas.get("habitat_fire_t1") {
+            self.render_queue.push_entity_grid(
+                3.0,
+                3.0,
+                0.0,
+                hab.clone(),
+                Rect::new(hab_screen.x - 64.0, hab_screen.y - 70.0, 128.0, 128.0),
+                Color::WHITE,
+            );
+        }
+
+        // - Criatura B na frente do habitat (grid 3.5, 3.5 -> depth maior)
+        if let Some(pyro) = self.atlas.get("creature_pyro_drake_baby") {
+            let p = self.camera.grid_to_screen(3.5, 3.5, &self.projection);
+            self.render_queue.push_entity_grid(
+                3.5,
+                3.5,
+                0.0,
+                pyro.clone(),
+                Rect::new(p.x - 24.0, p.y - 30.0, 48.0, 48.0),
+                Color::WHITE,
+            );
+        }
+
+        // 4. Camada de Interface de Usuário (Ui): HUD fixo e contadores
+        self.render_queue.push_ui_rect(
+            Rect::new(20.0, 20.0, 1040.0, 80.0),
+            Color::rgba(0.08, 0.12, 0.22, 0.9),
+        );
         if let Some(gold) = self.atlas.get("icon_gold_coin") {
-            self.batch.draw_sprite(gold, Rect::new(40.0, 36.0, 48.0, 48.0), Color::WHITE);
+            self.render_queue.push_ui(gold.clone(), Rect::new(40.0, 36.0, 48.0, 48.0), Color::WHITE);
         }
         if let Some(food) = self.atlas.get("icon_food_apple") {
-            self.batch.draw_sprite(food, Rect::new(260.0, 36.0, 48.0, 48.0), Color::WHITE);
+            self.render_queue.push_ui(food.clone(), Rect::new(260.0, 36.0, 48.0, 48.0), Color::WHITE);
         }
+
+        // Flush com ordenação de profundidade automática (Y-Sort) diretamente no SpriteBatch
+        self.render_queue.flush_to_batch(&mut self.batch);
     }
 
     fn on_pause(&mut self) {
@@ -309,4 +341,10 @@ fn main() {
         state.camera.zoom,
         state.camera.visible_world_bounds()
     );
+
+    // 9. Demonstração de Ordenação de Profundidade Isométrica (Y-Sorting)
+    println!("\n--- ORDENAÇÃO DE PROFUNDIDADE (Y-SORTING) & CAMADAS ---");
+    println!("RenderQueue com 4 camadas ativas: Ground -> GroundDecal -> Entities (Y-Sorted) -> Ui");
+    println!("Criatura Vulcânica (Grid 2.5, 2.5) renderizada ATRÁS do Habitat (Grid 3.0, 3.0).");
+    println!("Criatura Pírica (Grid 3.5, 3.5) renderizada NA FRENTE do Habitat (Grid 3.0, 3.0).");
 }
