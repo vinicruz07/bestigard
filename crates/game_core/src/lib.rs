@@ -1,9 +1,13 @@
 //! Game Core - Regras de negócio puras, modelo de criaturas, habitats e genética.
 #![forbid(unsafe_code)]
 
+pub mod breeding;
 pub mod creature;
 pub mod element;
 
+pub use breeding::{
+    BreedingEngine, BreedingError, BreedingResult, DeterministicRng,
+};
 pub use creature::{
     CreatureInstance, CreatureSpecies, GrowthStage, Rarity, SpeciesCatalog,
 };

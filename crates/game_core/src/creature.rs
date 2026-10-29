@@ -306,8 +306,69 @@ impl SpeciesCatalog {
             incubation_time_secs: 120,
         });
 
+        catalog.register(CreatureSpecies {
+            id: "volcano_beast".to_string(),
+            name: "Besta Vulcânica".to_string(),
+            description: "Colosso nascido da união do fogo abrasador e da rocha tectônica.".to_string(),
+            elements: vec![ElementId::new("fire"), ElementId::new("earth")],
+            rarity: Rarity::Uncommon,
+            base_hp: 210,
+            base_attack: 34,
+            base_defense: 25,
+            base_speed: 12,
+            base_gold_per_hour: 60,
+            breeding_time_secs: 45,
+            incubation_time_secs: 45,
+        });
+
+        catalog.register(CreatureSpecies {
+            id: "steam_naga".to_string(),
+            name: "Naga de Vapor".to_string(),
+            description: "Espírito hidro-térmico capaz de expelir névoas ferventes de camuflagem.".to_string(),
+            elements: vec![ElementId::new("fire"), ElementId::new("water")],
+            rarity: Rarity::Uncommon,
+            base_hp: 160,
+            base_attack: 30,
+            base_defense: 18,
+            base_speed: 22,
+            base_gold_per_hour: 62,
+            breeding_time_secs: 45,
+            incubation_time_secs: 45,
+        });
+
+        catalog.register(CreatureSpecies {
+            id: "storm_roc".to_string(),
+            name: "Roc da Tempestade".to_string(),
+            description: "Pássaro lendário que cruza vendavais elétricos anunciando tormentas.".to_string(),
+            elements: vec![ElementId::new("air"), ElementId::new("lightning")],
+            rarity: Rarity::Rare,
+            base_hp: 170,
+            base_attack: 38,
+            base_defense: 18,
+            base_speed: 32,
+            base_gold_per_hour: 90,
+            breeding_time_secs: 90,
+            incubation_time_secs: 90,
+        });
+
+        catalog.register(CreatureSpecies {
+            id: "eclipse_chimera".to_string(),
+            name: "Quimera do Eclipse".to_string(),
+            description: "Entidade mítica rara gerada no alinhamento singular entre pura luz e sombras abissais.".to_string(),
+            elements: vec![ElementId::new("light"), ElementId::new("shadow")],
+            rarity: Rarity::Epic,
+            base_hp: 250,
+            base_attack: 48,
+            base_defense: 30,
+            base_speed: 28,
+            base_gold_per_hour: 150,
+            breeding_time_secs: 180,
+            incubation_time_secs: 180,
+        });
+
         catalog
     }
+
 
     pub fn register(&mut self, species: CreatureSpecies) {
         self.species.insert(species.id.clone(), species);
@@ -317,9 +378,14 @@ impl SpeciesCatalog {
         self.species.get(id)
     }
 
+    pub fn all(&self) -> impl Iterator<Item = &CreatureSpecies> {
+        self.species.values()
+    }
+
     pub fn count(&self) -> usize {
         self.species.len()
     }
+
 }
 
 #[cfg(test)]
@@ -331,7 +397,7 @@ mod tests {
         let registry = ElementRegistry::with_default_elements();
         let catalog = SpeciesCatalog::with_starter_species();
 
-        assert_eq!(catalog.count(), 7);
+        assert_eq!(catalog.count(), 11);
 
         for species in catalog.species.values() {
             assert!(
