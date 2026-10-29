@@ -4,6 +4,7 @@
 pub mod breeding;
 pub mod creature;
 pub mod element;
+pub mod habitat;
 
 pub use breeding::{
     BreedingEngine, BreedingError, BreedingResult, DeterministicRng,
@@ -12,6 +13,9 @@ pub use creature::{
     CreatureInstance, CreatureSpecies, GrowthStage, Rarity, SpeciesCatalog,
 };
 pub use element::{Element, ElementId, ElementRegistry};
+pub use habitat::{
+    HabitatCatalog, HabitatError, HabitatInstance, HabitatTierInfo, HabitatType, IslandGrid,
+};
 
 /// Retorna a versão da crate de regras centrais.
 pub fn core_version() -> &'static str {
