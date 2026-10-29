@@ -7,6 +7,7 @@ use crate::creature::{CreatureInstance, CreatureSpecies, SpeciesCatalog};
 use crate::farming::{CropType, FarmError, FarmInstance, FeedResult, FeedingError, FeedingSystem};
 use crate::habitat::{HabitatCatalog, HabitatError, HabitatInstance, IslandGrid};
 use crate::incubation::{HatcheryError, HatcheryInstance};
+use crate::obstacle::{Obstacle, ObstacleKind};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
@@ -21,6 +22,7 @@ pub enum WorldError {
     CreatureNotFound(u64),
     FarmNotFound(u64),
     SpeciesNotFound(String),
+    ObstacleNotFound(u64),
     InsufficientGold { required: u64, available: u64 },
 }
 
@@ -65,6 +67,7 @@ impl std::fmt::Display for WorldError {
             Self::CreatureNotFound(id) => write!(f, "Criatura #{} não encontrada no santuário", id),
             Self::FarmNotFound(id) => write!(f, "Fazenda #{} não encontrada", id),
             Self::SpeciesNotFound(id) => write!(f, "Espécie '{}' não encontrada no catálogo", id),
+            Self::ObstacleNotFound(id) => write!(f, "Obstáculo #{} não encontrado", id),
             Self::InsufficientGold { required, available } => {
                 write!(f, "Ouro insuficiente: necessário {}, disponível {}", required, available)
             }
@@ -87,9 +90,15 @@ pub struct SanctuaryWorld {
     pub hatchery: HatcheryInstance,
     pub creatures: HashMap<u64, CreatureInstance>,
     pub bestiary: Bestiary,
+    /// Obstáculos naturais da ilha (compatível com savegames anteriores sem este campo).
+    #[serde(default)]
+    pub obstacles: HashMap<u64, Obstacle>,
     pub next_id_counter: u64,
     pub total_simulated_seconds: f64,
 }
+
+/// Custo em ouro para construir uma fazenda agrícola.
+pub const FARM_BUILD_COST_GOLD: u64 = 50;
 
 impl SanctuaryWorld {
     /// Inicializa um novo santuário com o grid e recursos configurados.
@@ -111,6 +120,7 @@ impl SanctuaryWorld {
             hatchery: HatcheryInstance::new(1, 3),
             creatures: HashMap::new(),
             bestiary: Bestiary::new(),
+            obstacles: HashMap::new(),
             next_id_counter: 10,
             total_simulated_seconds: 0.0,
         }
@@ -147,7 +157,58 @@ impl SanctuaryWorld {
 
         world.habitats.insert(hab_id, habitat);
 
+        // 3. Espalha obstáculos naturais pela ilha (fora da área inicial de habitat/fazenda)
+        let starter_obstacles = [
+            (ObstacleKind::SmallRock, 10, 3),
+            (ObstacleKind::Tree, 5, 8),
+            (ObstacleKind::LargeRock, 12, 6),
+            (ObstacleKind::Bush, 8, 10),
+            (ObstacleKind::Tree, 1, 12),
+        ];
+        for (kind, x, y) in starter_obstacles {
+            world.add_obstacle(kind, x, y)?;
+        }
+
         Ok(world)
+    }
+
+    /// Posiciona um obstáculo na ilha ocupando as células do grid.
+    pub fn add_obstacle(&mut self, kind: ObstacleKind, grid_x: u32, grid_y: u32) -> Result<u64, WorldError> {
+        let (w, h) = kind.footprint();
+        self.island_grid.can_place(grid_x, grid_y, w, h, None)?;
+        let id = self.next_id();
+        self.island_grid.occupy_area(grid_x, grid_y, w, h, id)?;
+        self.obstacles.insert(id, Obstacle::new(id, kind, grid_x, grid_y));
+        Ok(id)
+    }
+
+    /// Retorna o obstáculo que cobre a célula `(x, y)`, se houver.
+    pub fn obstacle_at(&self, x: u32, y: u32) -> Option<&Obstacle> {
+        self.obstacles.values().find(|o| o.covers(x, y))
+    }
+
+    /// Limpa um obstáculo mediante pagamento em ouro, liberando suas células. Retorna o custo pago.
+    pub fn clear_obstacle(&mut self, obstacle_id: u64) -> Result<u64, WorldError> {
+        let obstacle = self
+            .obstacles
+            .get(&obstacle_id)
+            .ok_or(WorldError::ObstacleNotFound(obstacle_id))?
+            .clone();
+        let cost = obstacle.kind.clear_cost_gold();
+        if self.gold < cost {
+            return Err(WorldError::InsufficientGold { required: cost, available: self.gold });
+        }
+        let (w, h) = obstacle.kind.footprint();
+        self.gold -= cost;
+        self.island_grid.release_area(obstacle.grid_x, obstacle.grid_y, w, h, obstacle_id);
+        self.obstacles.remove(&obstacle_id);
+        Ok(cost)
+    }
+
+    /// Verifica se uma área retangular da ilha está livre para construção.
+    pub fn can_place_building(&self, grid_x: u32, grid_y: u32, w: u32, h: u32) -> Result<(), WorldError> {
+        self.island_grid.can_place(grid_x, grid_y, w, h, None)?;
+        Ok(())
     }
 
     /// Gera um ID único e incremental para novas entidades.
@@ -233,8 +294,9 @@ impl SanctuaryWorld {
         let farm_id = self.next_id();
         let farm = FarmInstance::new(farm_id, grid_x, grid_y);
 
-        // Valida espaço de 2x2 no grid
+        // Valida espaço de 2x2 no grid e reserva as células
         self.island_grid.can_place(grid_x, grid_y, farm.width, farm.height, None)?;
+        self.island_grid.occupy_area(grid_x, grid_y, farm.width, farm.height, farm_id)?;
 
         self.gold -= gold_cost;
         self.farms.insert(farm_id, farm);
@@ -488,5 +550,46 @@ mod tests {
         assert_eq!(res.parent_b_id, earth_creature_id);
         assert_eq!(world.hatchery.eggs.len(), 1);
         assert!(!res.offspring_species_id.is_empty());
+    }
+
+    #[test]
+    fn test_building_placement_and_obstacle_clearing() {
+        let species_catalog = SpeciesCatalog::with_starter_species();
+        let hab_catalog = HabitatCatalog::with_default_habitats();
+        let mut world =
+            SanctuaryWorld::with_starter_setup("Construtor", &species_catalog, &hab_catalog).unwrap();
+
+        // Obstáculo inicial em (10, 3) bloqueia construção da área
+        assert_eq!(world.obstacles.len(), 5);
+        assert!(world.can_place_building(10, 3, 1, 1).is_err());
+        let rock_id = world.obstacle_at(10, 3).map(|o| o.instance_id).unwrap();
+
+        // Fazenda ocupa suas células no grid (2x2) e impede sobreposição
+        let farm_id = world.build_farm(6, 2, FARM_BUILD_COST_GOLD).unwrap();
+        assert!(world.island_grid.is_occupied(7, 3));
+        assert!(world.build_farm(7, 3, FARM_BUILD_COST_GOLD).is_err());
+        assert!(world.farms.contains_key(&farm_id));
+
+        // Limpeza: desconta ouro e libera a célula
+        let gold_before = world.gold;
+        let cost = world.clear_obstacle(rock_id).unwrap();
+        assert_eq!(world.gold, gold_before - cost);
+        assert!(world.can_place_building(10, 3, 1, 1).is_ok());
+        assert!(world.obstacle_at(10, 3).is_none());
+        assert!(matches!(world.clear_obstacle(rock_id), Err(WorldError::ObstacleNotFound(_))));
+
+        // Ouro insuficiente impede a limpeza
+        world.gold = 0;
+        let tree_id = world.obstacle_at(5, 8).map(|o| o.instance_id).unwrap();
+        assert!(matches!(
+            world.clear_obstacle(tree_id),
+            Err(WorldError::InsufficientGold { .. })
+        ));
+        assert!(world.obstacles.contains_key(&tree_id));
+
+        // Savegame mantém obstáculos
+        let loaded = SanctuaryWorld::from_json(&world.to_json().unwrap()).unwrap();
+        assert_eq!(loaded.obstacles.len(), world.obstacles.len());
+        assert!(loaded.island_grid.is_occupied(5, 8));
     }
 }

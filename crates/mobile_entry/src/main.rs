@@ -3,13 +3,31 @@
 
 use engine::{
     App, BitmapFont, Camera2D, Color, EngineConfig, GameState, InputManager,
-    IsometricProjection, MouseButton, Rect, RenderQueue, SpriteBatch,
-    TextureAtlas, TouchPhase, UiAction, UiButton, UiColor, UiManager, UiModal, UiProgressBar,
+    IsometricProjection, MouseButton, PlacementCursor, Rect, RenderCommand, RenderLayer,
+    RenderQueue, SpriteBatch, TextureAtlas, TouchPhase, UiAction, UiButton, UiColor, UiManager,
+    UiModal, UiProgressBar,
 };
 use game_core::{
     BattleSession, Combatant, CropCatalog, ElementRegistry, ElementalChart, HabitatCatalog,
-    IncubationSpeedModifier, MilestoneCatalog, ModifierSource, SanctuaryWorld, SpeciesCatalog,
+    IncubationSpeedModifier, MilestoneCatalog, ModifierSource, ObstacleKind, SanctuaryWorld,
+    SpeciesCatalog, FARM_BUILD_COST_GOLD,
 };
+
+/// Estrutura que o jogador está posicionando no modo de construção.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum BuildItem {
+    Habitat(String),
+    Farm,
+}
+
+/// Sessão ativa do modo de construção: item escolhido, custo e cursor sobre o grid.
+#[derive(Debug, Clone)]
+pub struct PlacementSession {
+    pub item: BuildItem,
+    pub label: String,
+    pub cost: u64,
+    pub cursor: PlacementCursor,
+}
 
 pub struct BestigardGame {
     pub elements: ElementRegistry,
@@ -28,6 +46,8 @@ pub struct BestigardGame {
     pub ui: UiManager,
     pub selected_creature_id: Option<u64>,
     pub selected_habitat_id: Option<u64>,
+    pub selected_obstacle_id: Option<u64>,
+    pub placement: Option<PlacementSession>,
     frames_rendered: u64,
     ticks_processed: u64,
 }
@@ -55,25 +75,9 @@ impl BestigardGame {
         let center_world = projection.grid_to_world(5.0, 5.0);
         camera.set_position(center_world);
 
-        let mut ui = UiManager::new(1080.0, 1920.0);
-        // Botões rápidos do HUD Superior
-        ui.add_global_button(
-            UiButton::new("btn_collect_all", Rect::new(550.0, 24.0, 150.0, 56.0), "COLETAR")
-                .with_colors(UiColor::BTN_PRIMARY, Color::WHITE)
-                .with_scale(1.8),
-        );
-        ui.add_global_button(
-            UiButton::new("btn_open_creature", Rect::new(715.0, 24.0, 160.0, 56.0), "CRIATURA")
-                .with_colors(UiColor::BTN_ACCENT, Color::WHITE)
-                .with_scale(1.8),
-        );
-        ui.add_global_button(
-            UiButton::new("btn_open_breeding", Rect::new(890.0, 24.0, 150.0, 56.0), "CRUZAR")
-                .with_colors(UiColor::GOLD_ACCENT, Color::rgb(0.08, 0.12, 0.22))
-                .with_scale(1.8),
-        );
+        let ui = UiManager::new(1080.0, 1920.0);
 
-        Self {
+        let mut game = Self {
             elements: ElementRegistry::with_default_elements(),
             catalog,
             habitats_catalog,
@@ -82,7 +86,7 @@ impl BestigardGame {
             elemental_chart: ElementalChart::with_default_affinities(),
             world,
             atlas,
-            batch: SpriteBatch::new(1024),
+            batch: SpriteBatch::new(4096),
             camera,
             projection,
             render_queue: RenderQueue::new(),
@@ -90,9 +94,241 @@ impl BestigardGame {
             ui,
             selected_creature_id: None,
             selected_habitat_id: None,
+            selected_obstacle_id: None,
+            placement: None,
             frames_rendered: 0,
             ticks_processed: 0,
+        };
+        game.configure_hud_buttons();
+        game
+    }
+
+    /// Botões rápidos do HUD Superior (visíveis fora do modo de construção).
+    fn configure_hud_buttons(&mut self) {
+        self.ui.clear_global_buttons();
+        self.ui.add_global_button(
+            UiButton::new("btn_collect_all", Rect::new(480.0, 24.0, 135.0, 56.0), "COLETAR")
+                .with_colors(UiColor::BTN_PRIMARY, Color::WHITE)
+                .with_scale(1.8),
+        );
+        self.ui.add_global_button(
+            UiButton::new("btn_open_creature", Rect::new(622.0, 24.0, 135.0, 56.0), "CRIATURA")
+                .with_colors(UiColor::BTN_ACCENT, Color::WHITE)
+                .with_scale(1.8),
+        );
+        self.ui.add_global_button(
+            UiButton::new("btn_open_breeding", Rect::new(764.0, 24.0, 135.0, 56.0), "CRUZAR")
+                .with_colors(UiColor::GOLD_ACCENT, Color::rgb(0.08, 0.12, 0.22))
+                .with_scale(1.8),
+        );
+        self.ui.add_global_button(
+            UiButton::new("btn_open_shop", Rect::new(906.0, 24.0, 135.0, 56.0), "LOJA")
+                .with_colors(UiColor::BTN_SECONDARY, Color::WHITE)
+                .with_scale(1.8),
+        );
+    }
+
+    /// Botões flutuantes de confirmar/cancelar exibidos durante o modo de construção.
+    fn configure_placement_buttons(&mut self) {
+        self.ui.clear_global_buttons();
+        self.ui.add_global_button(
+            UiButton::new("btn_placement_confirm", Rect::new(150.0, 1740.0, 380.0, 96.0), "CONFIRMAR")
+                .with_colors(UiColor::BTN_PRIMARY, Color::WHITE)
+                .with_scale(2.2),
+        );
+        self.ui.add_global_button(
+            UiButton::new("btn_placement_cancel", Rect::new(550.0, 1740.0, 380.0, 96.0), "CANCELAR")
+                .with_colors(UiColor::BTN_DANGER, Color::WHITE)
+                .with_scale(2.2),
+        );
+    }
+
+    /// Valida se o cursor de construção está sobre uma área livre da ilha.
+    fn placement_is_valid(&self, cursor: &PlacementCursor) -> bool {
+        match cursor.origin_unsigned() {
+            Some((x, y)) => self
+                .world
+                .can_place_building(x, y, cursor.width, cursor.height)
+                .is_ok(),
+            None => false,
         }
+    }
+
+    /// Entra no modo de construção para o item escolhido, centralizando o cursor na tela.
+    pub fn start_placement(&mut self, item: BuildItem) {
+        let (label, cost, w, h) = match &item {
+            BuildItem::Habitat(type_id) => match self.habitats_catalog.get(type_id) {
+                Some(t) => (t.name.clone(), t.build_cost_gold, t.width, t.height),
+                None => return,
+            },
+            BuildItem::Farm => ("Fazenda".to_string(), FARM_BUILD_COST_GOLD, 2, 2),
+        };
+
+        let mut cursor = PlacementCursor::new(w, h);
+        let screen_center = self.camera.screen_to_grid_cell(540.0, 960.0, &self.projection);
+        cursor.center_on_cell(screen_center);
+        cursor.set_valid(self.placement_is_valid(&cursor));
+
+        self.placement = Some(PlacementSession { item, label, cost, cursor });
+        self.configure_placement_buttons();
+    }
+
+    /// Move o cursor de construção para a célula tocada e revalida a área.
+    pub fn move_placement_to(&mut self, cell: (i32, i32)) {
+        let Some(mut session) = self.placement.take() else { return };
+        session.cursor.center_on_cell(cell);
+        let valid = self.placement_is_valid(&session.cursor);
+        session.cursor.set_valid(valid);
+        self.placement = Some(session);
+    }
+
+    /// Sai do modo de construção sem comprar nada.
+    pub fn cancel_placement(&mut self) {
+        self.placement = None;
+        self.configure_hud_buttons();
+    }
+
+    /// Confirma a compra: valida área e ouro, constrói a estrutura e sai do modo de construção.
+    pub fn confirm_placement(&mut self) -> Result<u64, String> {
+        let session = self.placement.clone().ok_or("Nenhuma construção em andamento")?;
+        let (x, y) = session
+            .cursor
+            .origin_unsigned()
+            .ok_or("Posição fora dos limites da ilha")?;
+
+        let result = match &session.item {
+            BuildItem::Habitat(type_id) => self.world.build_habitat(
+                type_id,
+                x,
+                y,
+                session.cost,
+                &self.habitats_catalog,
+            ),
+            BuildItem::Farm => self.world.build_farm(x, y, session.cost),
+        };
+
+        match result {
+            Ok(id) => {
+                self.cancel_placement();
+                Ok(id)
+            }
+            Err(e) => {
+                // Mantém o modo ativo e atualiza o indicador visual
+                let valid = self.placement_is_valid(&session.cursor);
+                if let Some(s) = self.placement.as_mut() {
+                    s.cursor.set_valid(valid);
+                }
+                Err(e.to_string())
+            }
+        }
+    }
+
+    /// Abre a loja de construções com habitats elementais e fazenda.
+    pub fn open_shop_modal(&mut self) {
+        let mut modal = UiModal::new(
+            "modal_shop",
+            "LOJA DE CONSTRUCOES",
+            Rect::new(140.0, 280.0, 800.0, 680.0),
+        );
+        modal.add_text(
+            format!("SALDO: {} OURO", self.world.gold),
+            170.0,
+            335.0,
+            1.8,
+            UiColor::GOLD_FILL,
+        );
+
+        let mut y = 380.0;
+        for hab in self.habitats_catalog.all_sorted() {
+            let element = hab
+                .supported_elements
+                .first()
+                .map(|e| e.as_str().to_uppercase())
+                .unwrap_or_default();
+            let affordable = self.world.gold >= hab.build_cost_gold;
+            modal.add_button(
+                UiButton::new(
+                    format!("shop_habitat:{}", hab.id),
+                    Rect::new(170.0, y, 740.0, 54.0),
+                    format!("HABITAT {} - {} OURO", element, hab.build_cost_gold),
+                )
+                .with_colors(
+                    if affordable { UiColor::BTN_ACCENT } else { UiColor::BTN_DISABLED },
+                    Color::WHITE,
+                )
+                .with_disabled(!affordable)
+                .with_scale(1.8),
+            );
+            y += 62.0;
+        }
+
+        let farm_affordable = self.world.gold >= FARM_BUILD_COST_GOLD;
+        modal.add_button(
+            UiButton::new(
+                "shop_farm",
+                Rect::new(170.0, y, 740.0, 54.0),
+                format!("FAZENDA DE COMIDA - {} OURO", FARM_BUILD_COST_GOLD),
+            )
+            .with_colors(
+                if farm_affordable { UiColor::BTN_PRIMARY } else { UiColor::BTN_DISABLED },
+                Color::WHITE,
+            )
+            .with_disabled(!farm_affordable)
+            .with_scale(1.8),
+        );
+
+        self.ui.open_modal(modal);
+    }
+
+    /// Abre o diálogo de limpeza de um obstáculo da ilha.
+    pub fn open_obstacle_modal(&mut self, obstacle_id: u64) {
+        let Some(obstacle) = self.world.obstacles.get(&obstacle_id).cloned() else { return };
+        self.selected_obstacle_id = Some(obstacle_id);
+
+        let cost = obstacle.kind.clear_cost_gold();
+        let (w, h) = obstacle.kind.footprint();
+        let affordable = self.world.gold >= cost;
+
+        let mut modal = UiModal::new(
+            "modal_obstacle",
+            "LIMPAR TERRENO",
+            Rect::new(140.0, 380.0, 800.0, 420.0),
+        );
+        modal.add_text(
+            format!("OBSTACULO: {} ({}x{} CELULAS)", obstacle.kind.display_name(), w, h),
+            170.0,
+            450.0,
+            1.8,
+            Color::WHITE,
+        );
+        modal.add_text(
+            format!("POSICAO NA ILHA: ({}, {})", obstacle.grid_x, obstacle.grid_y),
+            170.0,
+            490.0,
+            1.6,
+            Color::rgb(0.95, 0.82, 0.35),
+        );
+        modal.add_text(
+            format!("SALDO: {} OURO", self.world.gold),
+            170.0,
+            530.0,
+            1.6,
+            UiColor::GOLD_FILL,
+        );
+        modal.add_button(
+            UiButton::new(
+                "btn_clear_obstacle",
+                Rect::new(190.0, 600.0, 700.0, 68.0),
+                format!("LIMPAR (-{} OURO)", cost),
+            )
+            .with_colors(
+                if affordable { UiColor::BTN_PRIMARY } else { UiColor::BTN_DISABLED },
+                Color::WHITE,
+            )
+            .with_disabled(!affordable)
+            .with_scale(1.9),
+        );
+        self.ui.open_modal(modal);
     }
 
     /// Abre janela modal de inspeção e gestão de criatura (alimentação, nível e evolução).
@@ -460,29 +696,94 @@ impl GameState for BestigardGame {
         self.batch.clear();
         self.render_queue.clear();
 
-        // 1. Camada de Fundo (Ground): grade de 6x6 tiles isométricos
+        // 1. Camada de Fundo (Ground): grade completa da ilha em tiles isométricos
         if let Some(grass) = self.atlas.get("tile_island_grass_01") {
-            for x in 0..6 {
-                for y in 0..6 {
+            let tile_w = self.projection.tile_width * self.camera.zoom;
+            let tile_h = self.projection.tile_height * self.camera.zoom;
+            for x in 0..self.world.island_grid.width {
+                for y in 0..self.world.island_grid.height {
                     let screen_pos = self.camera.grid_to_screen(x as f32, y as f32, &self.projection);
-                    let tile_w = self.projection.tile_width * self.camera.zoom;
-                    let tile_h = self.projection.tile_height * self.camera.zoom;
                     let tile_rect = Rect::new(screen_pos.x - tile_w * 0.5, screen_pos.y, tile_w, tile_h);
                     self.render_queue.push_ground(grass.clone(), tile_rect, Color::WHITE);
                 }
             }
         }
 
-        // 2. Camada de Decalques no Chão (GroundDecal): sombra sob o habitat e construções
-        let hab_screen = self.camera.grid_to_screen(3.0, 3.0, &self.projection);
-        self.render_queue.push_decal(
-            self.atlas.get("tile_island_grass_01").unwrap().clone(),
-            Rect::new(hab_screen.x - 70.0, hab_screen.y + 40.0, 140.0, 30.0),
-            Color::rgba(0.0, 0.0, 0.0, 0.35),
-        );
+        // 2. Camada de Decalques no Chão (GroundDecal): indicador verde/vermelho do modo de construção
+        if let Some(session) = &self.placement {
+            session
+                .cursor
+                .push_overlay(&mut self.render_queue, &self.camera, &self.projection);
+        }
 
-        // 3. Camada de Entidades com Y-Sorting (Entities):
-        // - Criatura A atrás do habitat (grid 2.5, 2.5 -> depth menor)
+        // 3. Camada de Entidades com Y-Sorting (Entities): obstáculos, construções e criaturas
+        let zoom = self.camera.zoom;
+        let tile_w = self.projection.tile_width * zoom;
+
+        // - Obstáculos naturais (placeholders coloridos até os sprites PNG existirem)
+        for obstacle in self.world.obstacles.values() {
+            let (w, h) = obstacle.kind.footprint();
+            let center = self.camera.grid_to_screen(
+                obstacle.grid_x as f32 + w as f32 * 0.5,
+                obstacle.grid_y as f32 + h as f32 * 0.5,
+                &self.projection,
+            );
+            let (size, color) = match obstacle.kind {
+                ObstacleKind::Bush => (0.45, Color::rgb(0.18, 0.55, 0.22)),
+                ObstacleKind::SmallRock => (0.45, Color::rgb(0.52, 0.52, 0.56)),
+                ObstacleKind::Tree => (0.55, Color::rgb(0.10, 0.40, 0.16)),
+                ObstacleKind::LargeRock => (0.45, Color::rgb(0.38, 0.38, 0.44)),
+            };
+            let side = tile_w * size * (w as f32);
+            let depth = obstacle.grid_x as f32 + obstacle.grid_y as f32 + (w + h) as f32 * 0.5;
+            self.render_queue.push(RenderCommand::colored_rect(
+                RenderLayer::Entities,
+                depth,
+                Rect::new(center.x - side * 0.5, center.y - side * 0.9, side, side),
+                color,
+            ));
+        }
+
+        // - Habitats e fazendas construídos (sprite compartilhado até as artes finais)
+        if let Some(hab_sprite) = self.atlas.get("habitat_fire_t1") {
+            for hab in self.world.habitats.values() {
+                let Some(hab_type) = self.habitats_catalog.get(&hab.type_id) else { continue };
+                let center = self.camera.grid_to_screen(
+                    hab.grid_x as f32 + hab_type.width as f32 * 0.5,
+                    hab.grid_y as f32 + hab_type.height as f32 * 0.5,
+                    &self.projection,
+                );
+                let side = (hab_type.width + hab_type.height) as f32 * 0.5 * tile_w * 0.6;
+                self.render_queue.push_entity_grid(
+                    hab.grid_x as f32 + hab_type.width as f32 * 0.5,
+                    hab.grid_y as f32 + hab_type.height as f32 * 0.5,
+                    0.0,
+                    hab_sprite.clone(),
+                    Rect::new(center.x - side * 0.5, center.y - side * 0.85, side, side),
+                    Color::WHITE,
+                );
+            }
+        }
+        if let Some(farm_sprite) = self.atlas.get("building_farm_empty") {
+            for farm in self.world.farms.values() {
+                let center = self.camera.grid_to_screen(
+                    farm.grid_x as f32 + farm.width as f32 * 0.5,
+                    farm.grid_y as f32 + farm.height as f32 * 0.5,
+                    &self.projection,
+                );
+                let side = (farm.width + farm.height) as f32 * 0.5 * tile_w * 0.6;
+                self.render_queue.push_entity_grid(
+                    farm.grid_x as f32 + farm.width as f32 * 0.5,
+                    farm.grid_y as f32 + farm.height as f32 * 0.5,
+                    0.0,
+                    farm_sprite.clone(),
+                    Rect::new(center.x - side * 0.5, center.y - side * 0.85, side, side),
+                    Color::WHITE,
+                );
+            }
+        }
+
+        // - Criatura A (grid 2.5, 2.5 -> depth menor)
         if let Some(volcano) = self.atlas.get("creature_volcano_beast_baby") {
             let p = self.camera.grid_to_screen(2.5, 2.5, &self.projection);
             self.render_queue.push_entity_grid(
@@ -495,24 +796,12 @@ impl GameState for BestigardGame {
             );
         }
 
-        // - Habitat no meio (grid 3.0, 3.0 -> depth intermediário)
-        if let Some(hab) = self.atlas.get("habitat_fire_t1") {
-            self.render_queue.push_entity_grid(
-                3.0,
-                3.0,
-                0.0,
-                hab.clone(),
-                Rect::new(hab_screen.x - 64.0, hab_screen.y - 70.0, 128.0, 128.0),
-                Color::WHITE,
-            );
-        }
-
-        // - Criatura B na frente do habitat (grid 3.5, 3.5 -> depth maior)
+        // - Criatura B na frente do habitat (grid 4.0, 4.0 -> depth maior que o centro do habitat)
         if let Some(pyro) = self.atlas.get("creature_pyro_drake_baby") {
-            let p = self.camera.grid_to_screen(3.5, 3.5, &self.projection);
+            let p = self.camera.grid_to_screen(4.0, 4.0, &self.projection);
             self.render_queue.push_entity_grid(
-                3.5,
-                3.5,
+                4.0,
+                4.0,
                 0.0,
                 pyro.clone(),
                 Rect::new(p.x - 24.0, p.y - 30.0, 48.0, 48.0),
@@ -569,7 +858,42 @@ impl GameState for BestigardGame {
             Color::WHITE,
         );
 
-        // 6. Renderização da Interface e Modais via UiManager
+        // 6. Painel de informação do modo de construção (acima dos botões flutuantes)
+        if let Some(session) = &self.placement {
+            self.render_queue.push_ui_rect(
+                Rect::new(60.0, 1620.0, 960.0, 100.0),
+                UiColor::DARK_GLASS,
+            );
+            self.render_queue.flush_to_batch(&mut self.batch);
+            let status = if session.cursor.valid { "AREA LIVRE" } else { "AREA BLOQUEADA" };
+            let status_color = if session.cursor.valid {
+                Color::rgb(0.4, 0.95, 0.45)
+            } else {
+                Color::rgb(1.0, 0.4, 0.4)
+            };
+            self.font.draw_text(
+                &mut self.batch,
+                &format!(
+                    "CONSTRUIR: {} - {} OURO",
+                    session.label.to_uppercase().replace("Á", "A").replace("Ç", "C"),
+                    session.cost
+                ),
+                90.0,
+                1636.0,
+                1.8,
+                Color::WHITE,
+            );
+            self.font.draw_text(
+                &mut self.batch,
+                &format!("{} - TOQUE NO MAPA PARA MOVER", status),
+                90.0,
+                1676.0,
+                1.6,
+                status_color,
+            );
+        }
+
+        // 7. Renderização da Interface e Modais via UiManager
         self.ui.render(&mut self.render_queue, &mut self.batch, &self.font);
     }
 
@@ -578,14 +902,46 @@ impl GameState for BestigardGame {
     }
 
     fn on_input(&mut self, input: &InputManager) {
-        let mut handled_tap = false;
-
         for tap in input.taps() {
+            let mut handled_tap = false;
             let action = self.ui.handle_tap(tap);
             match action {
                 UiAction::ButtonClicked(ref id) => {
                     handled_tap = true;
                     match id.as_str() {
+                        "btn_open_shop" => {
+                            self.open_shop_modal();
+                        }
+                        "shop_farm" => {
+                            self.ui.close_modal();
+                            self.start_placement(BuildItem::Farm);
+                            println!("Construção: modo de posicionamento iniciado (Fazenda).");
+                        }
+                        id if id.starts_with("shop_habitat:") => {
+                            let type_id = id["shop_habitat:".len()..].to_string();
+                            self.ui.close_modal();
+                            println!("Construção: modo de posicionamento iniciado ('{}').", type_id);
+                            self.start_placement(BuildItem::Habitat(type_id));
+                        }
+                        "btn_placement_confirm" => match self.confirm_placement() {
+                            Ok(new_id) => println!("Construção: estrutura #{} construída com sucesso!", new_id),
+                            Err(e) => println!("Construção: não foi possível construir: {}", e),
+                        },
+                        "btn_placement_cancel" => {
+                            self.cancel_placement();
+                            println!("Construção: modo de posicionamento cancelado.");
+                        }
+                        "btn_clear_obstacle" => {
+                            if let Some(oid) = self.selected_obstacle_id.take() {
+                                match self.world.clear_obstacle(oid) {
+                                    Ok(cost) => {
+                                        println!("Terreno: obstáculo #{} limpo por {} ouro.", oid, cost);
+                                        self.ui.close_modal();
+                                    }
+                                    Err(e) => println!("Terreno: não foi possível limpar: {}", e),
+                                }
+                            }
+                        }
                         "btn_collect_all" => {
                             let total = self.world.collect_all_gold();
                             println!("UI: Coletado ouro de todos os habitats: +{} ouro!", total);
@@ -662,7 +1018,26 @@ impl GameState for BestigardGame {
                     tap.x, tap.y, cell.0, cell.1
                 );
 
-                // Se tocou sobre o habitat (células 2..5 x 2..5), abre modal do habitat
+                // Modo de construção: o toque reposiciona o cursor sobre o grid
+                if self.placement.is_some() {
+                    self.move_placement_to(cell);
+                    continue;
+                }
+
+                // Toque sobre obstáculo: abre diálogo de limpeza
+                if cell.0 >= 0 && cell.1 >= 0 {
+                    if let Some(oid) = self
+                        .world
+                        .obstacle_at(cell.0 as u32, cell.1 as u32)
+                        .map(|o| o.instance_id)
+                    {
+                        println!("Terreno: obstáculo #{} selecionado no mapa -> Abrindo menu de limpeza", oid);
+                        self.open_obstacle_modal(oid);
+                        continue;
+                    }
+                }
+
+                // Se tocou sobre um habitat, abre modal do habitat
                 if let Some((&hab_id, _)) = self.world.habitats.iter().find(|(_, h)| {
                     let hx = h.grid_x as i32;
                     let hy = h.grid_y as i32;
@@ -675,6 +1050,7 @@ impl GameState for BestigardGame {
         }
 
         // Se nenhum modal estiver aberto, gestos de pan e pinch movem a câmera normalmente
+        // (inclusive durante o modo de construção, para localizar a área desejada)
         if !self.ui.is_modal_open() {
             input.apply_to_camera(&mut self.camera);
         }
@@ -838,9 +1214,9 @@ fn main() {
         creature.stage = game_core::GrowthStage::from_level(4);
     }
 
-    println!("Abrindo modal do [CRUZAMENTO] (pos: 920, 40)...");
-    hud_input.on_mouse_button_down(MouseButton::Left, 920.0, 40.0);
-    hud_input.on_mouse_button_up(MouseButton::Left, 920.0, 40.0);
+    println!("Abrindo modal do [CRUZAMENTO] (pos: 830, 40)...");
+    hud_input.on_mouse_button_down(MouseButton::Left, 830.0, 40.0);
+    hud_input.on_mouse_button_up(MouseButton::Left, 830.0, 40.0);
     state.on_input(&hud_input);
     hud_input.clear_events();
     assert!(state.ui.is_modal_open());
@@ -870,5 +1246,83 @@ fn main() {
     state.ui.close_modal();
     assert!(!state.ui.is_modal_open());
 
+    // 9. Modo de Construção Interativo e Limpeza de Obstáculos
+    println!("\n--- MODO DE CONSTRUÇÃO & LIMPEZA DE OBSTÁCULOS ---");
+    let tap_at = |state: &mut BestigardGame, x: f32, y: f32| {
+        let mut input = InputManager::new();
+        input.on_mouse_button_down(MouseButton::Left, x, y);
+        input.on_mouse_button_up(MouseButton::Left, x, y);
+        state.on_input(&input);
+    };
+    // Converte o centro de uma célula do grid em coordenadas de tela com a câmera atual
+    let cell_to_screen = |state: &BestigardGame, cx: u32, cy: u32| {
+        let p = state
+            .camera
+            .grid_to_screen(cx as f32 + 0.5, cy as f32 + 0.5, &state.projection);
+        (p.x, p.y)
+    };
+
+    let habitats_before = state.world.habitats.len();
+    let gold_before = state.world.gold;
+
+    println!("1. Tocando em [LOJA] (pos: 970, 40) e escolhendo [HABITAT WATER]...");
+    tap_at(state, 970.0, 40.0);
+    assert!(state.ui.is_modal_open());
+    tap_at(state, 400.0, 780.0);
+    assert!(state.placement.is_some());
+    assert!(!state.ui.is_modal_open());
+    println!("Modo de posicionamento ativo (HUD substituído por [CONFIRMAR]/[CANCELAR]).");
+
+    println!("2. Movendo cursor sobre o habitat existente (célula 3,3) -> área deve ficar BLOQUEADA...");
+    let (sx, sy) = cell_to_screen(state, 3, 3);
+    tap_at(state, sx, sy);
+    assert!(!state.placement.as_ref().unwrap().cursor.valid);
+    tap_at(state, 340.0, 1788.0); // [CONFIRMAR] com área inválida não constrói
+    assert_eq!(state.world.habitats.len(), habitats_before);
+    assert!(state.placement.is_some());
+
+    println!("3. Movendo cursor para área livre (célula 8,6) -> área deve ficar LIVRE...");
+    let (sx, sy) = cell_to_screen(state, 8, 6);
+    tap_at(state, sx, sy);
+    assert!(state.placement.as_ref().unwrap().cursor.valid);
+
+    println!("4. Confirmando construção em [CONFIRMAR] (pos: 340, 1788)...");
+    tap_at(state, 340.0, 1788.0);
+    assert!(state.placement.is_none());
+    assert_eq!(state.world.habitats.len(), habitats_before + 1);
+    assert_eq!(state.world.gold, gold_before - 300);
+    println!(
+        "Habitat construído! Ouro: {} -> {}. Total de habitats: {}.",
+        gold_before,
+        state.world.gold,
+        state.world.habitats.len()
+    );
+
+    println!("5. Cancelamento: abrindo [LOJA] -> [FAZENDA] e cancelando em [CANCELAR] (pos: 740, 1788)...");
+    tap_at(state, 970.0, 40.0);
+    tap_at(state, 400.0, 840.0);
+    assert!(state.placement.is_some());
+    let gold_after_build = state.world.gold;
+    tap_at(state, 740.0, 1788.0);
+    assert!(state.placement.is_none());
+    assert_eq!(state.world.gold, gold_after_build);
+
+    println!("6. Limpando obstáculo: tocando na Pedra Pequena (célula 10,3)...");
+    let obstacles_before = state.world.obstacles.len();
+    let gold_before_clear = state.world.gold;
+    let (sx, sy) = cell_to_screen(state, 10, 3);
+    tap_at(state, sx, sy);
+    assert!(state.ui.is_modal_open());
+    tap_at(state, 400.0, 634.0); // [LIMPAR]
+    assert_eq!(state.world.obstacles.len(), obstacles_before - 1);
+    assert_eq!(state.world.gold, gold_before_clear - 25);
+    assert!(state.world.can_place_building(10, 3, 1, 1).is_ok());
+    assert!(!state.ui.is_modal_open());
+    println!(
+        "Obstáculo removido por 25 ouro. Obstáculos restantes: {}. Célula (10,3) liberada para construção.",
+        state.world.obstacles.len()
+    );
+
     println!("\n>> Interface de Usuário (HUD e Menus Modais) validada com 100% de sucesso! <<");
+    println!(">> Modo de Construção e Limpeza de Terreno validados com 100% de sucesso! <<");
 }

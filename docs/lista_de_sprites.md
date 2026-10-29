@@ -191,3 +191,13 @@ Este documento lista todos os assets visuais em 2D/isométrico necessários para
 - `ui_panel_frame`: Borda de janela estilizada (9-slice) em tom azul-escuro marinho com detalhes dourados.
 - `ui_health_bar_fill`: Barra de vida vermelha/verde para duelos da Arena.
 - `ui_exp_bar_fill`: Barra de experiência azul turquesa brilhante.
+
+### 6.4 Obstaculos da Ilha (Modo de Construcao)
+*Dimensoes recomendadas:* 128x128 px (1x1 celula) e 256x192 px (rochedo 2x2). Fundo transparente, base alinhada ao losango do tile.
+- `obstacle_bush`: Arbusto verde denso com pequenas flores, ocupa 1 celula.
+- `obstacle_rock_small`: Pedra cinzenta musgosa, ocupa 1 celula.
+- `obstacle_tree`: Arvore de copa frondosa e tronco grosso, ocupa 1 celula.
+- `obstacle_rock_large`: Rochedo grande com veios de cristal, ocupa 2x2 celulas.
+- `ui_placement_valid`: (opcional) Moldura de tile verde brilhante para a area livre de construcao.
+- `ui_placement_invalid`: (opcional) Moldura de tile vermelha para a area bloqueada.
+

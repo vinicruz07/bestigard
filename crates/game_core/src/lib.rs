@@ -9,7 +9,11 @@ pub mod element;
 pub mod farming;
 pub mod habitat;
 pub mod incubation;
+pub mod obstacle;
+pub mod save;
 pub mod world;
+
+pub use save::{SaveError, SaveGame, SAVE_VERSION};
 
 pub use bestiary::{
     Bestiary, BestiaryError, CollectionMilestone, DiscoveredEntry, MilestoneCatalog,
@@ -36,7 +40,8 @@ pub use habitat::{
 pub use incubation::{
     EggInstance, HatcheryError, HatcheryInstance, IncubationSpeedModifier, ModifierSource,
 };
-pub use world::{SanctuaryWorld, WorldError};
+pub use world::{SanctuaryWorld, WorldError, FARM_BUILD_COST_GOLD};
+pub use obstacle::{Obstacle, ObstacleKind};
 
 /// Retorna a versão da crate de regras centrais.
 pub fn core_version() -> &'static str {

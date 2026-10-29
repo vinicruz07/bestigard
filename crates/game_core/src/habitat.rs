@@ -74,6 +74,9 @@ pub struct HabitatType {
     pub width: u32,
     pub height: u32,
     pub tiers: Vec<HabitatTierInfo>,
+    /// Custo em ouro para construir este habitat na loja.
+    #[serde(default)]
+    pub build_cost_gold: u64,
 }
 
 impl HabitatType {
@@ -316,6 +319,36 @@ impl IslandGrid {
     pub fn is_occupied(&self, x: u32, y: u32) -> bool {
         self.occupied_cells.contains_key(&Self::cell_key(x, y))
     }
+
+    /// Ocupa uma área retangular para qualquer estrutura (fazenda, obstáculo etc.), validando limites e colisões.
+    pub fn occupy_area(
+        &mut self,
+        origin_x: u32,
+        origin_y: u32,
+        w: u32,
+        h: u32,
+        owner_id: u64,
+    ) -> Result<(), HabitatError> {
+        self.can_place(origin_x, origin_y, w, h, None)?;
+        for x in origin_x..origin_x + w {
+            for y in origin_y..origin_y + h {
+                self.occupied_cells.insert(Self::cell_key(x, y), owner_id);
+            }
+        }
+        Ok(())
+    }
+
+    /// Libera as células de uma área pertencentes ao `owner_id`.
+    pub fn release_area(&mut self, origin_x: u32, origin_y: u32, w: u32, h: u32, owner_id: u64) {
+        for x in origin_x..origin_x + w {
+            for y in origin_y..origin_y + h {
+                let key = Self::cell_key(x, y);
+                if self.occupied_cells.get(&key) == Some(&owner_id) {
+                    self.occupied_cells.remove(&key);
+                }
+            }
+        }
+    }
 }
 
 
@@ -373,10 +406,18 @@ impl HabitatCatalog {
                         upgrade_cost_gold: 5000,
                     },
                 ],
+                build_cost_gold: 300,
             });
         }
 
         catalog
+    }
+
+    /// Lista todos os tipos de habitat ordenados por id (ordem estável para menus de loja).
+    pub fn all_sorted(&self) -> Vec<&HabitatType> {
+        let mut list: Vec<&HabitatType> = self.types.values().collect();
+        list.sort_by(|a, b| a.id.cmp(&b.id));
+        list
     }
 
     pub fn register(&mut self, hab_type: HabitatType) {
