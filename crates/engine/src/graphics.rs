@@ -2,8 +2,9 @@
 #![forbid(unsafe_code)]
 
 use crate::app::{App, EngineConfig, GameState};
+use crate::input::InputManager;
 use miniquad::conf::Conf;
-use miniquad::{EventHandler, PassAction, RenderingBackend};
+use miniquad::{EventHandler, MouseButton, PassAction, RenderingBackend, TouchPhase};
 
 /// Representação RGBA normalizada (0.0 a 1.0) para cores de renderização.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -122,6 +123,7 @@ impl GraphicsContext {
 pub struct WindowRunner<S: GameState> {
     pub app: App<S>,
     pub gfx: GraphicsContext,
+    pub input: InputManager,
     backend: Box<dyn RenderingBackend>,
     last_frame_time: f64,
 }
@@ -133,10 +135,12 @@ impl<S: GameState + 'static> WindowRunner<S> {
         let app = App::new(config, state);
         let gfx = GraphicsContext::new(width, height);
         let backend = miniquad::window::new_rendering_backend();
+        let input = InputManager::new();
 
         Self {
             app,
             gfx,
+            input,
             backend,
             last_frame_time: miniquad::date::now(),
         }
@@ -163,6 +167,11 @@ impl<S: GameState> EventHandler for WindowRunner<S> {
         let now = miniquad::date::now();
         let raw_dt = (now - self.last_frame_time).max(0.0) as f32;
         self.last_frame_time = now;
+        self.input.update_time(now);
+
+        // Notifica o jogo sobre eventos de entrada acumulados
+        self.app.state_mut().on_input(&self.input);
+        self.input.clear_events();
 
         // Avança simulação e lógica com delta time real
         self.app.step(raw_dt);
@@ -175,6 +184,26 @@ impl<S: GameState> EventHandler for WindowRunner<S> {
 
     fn resize_event(&mut self, width: f32, height: f32) {
         self.gfx.resize(width, height);
+    }
+
+    fn mouse_motion_event(&mut self, x: f32, y: f32) {
+        self.input.on_mouse_motion(x, y);
+    }
+
+    fn mouse_wheel_event(&mut self, dx: f32, dy: f32) {
+        self.input.on_mouse_wheel(dx, dy);
+    }
+
+    fn mouse_button_down_event(&mut self, button: MouseButton, x: f32, y: f32) {
+        self.input.on_mouse_button_down(button, x, y);
+    }
+
+    fn mouse_button_up_event(&mut self, button: MouseButton, x: f32, y: f32) {
+        self.input.on_mouse_button_up(button, x, y);
+    }
+
+    fn touch_event(&mut self, phase: TouchPhase, id: u64, x: f32, y: f32) {
+        self.input.on_touch(phase, id, x, y);
     }
 
     fn window_minimized_event(&mut self) {

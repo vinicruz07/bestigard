@@ -22,6 +22,9 @@ pub trait GameState {
 
     /// Disparado quando o jogo volta ao primeiro plano.
     fn on_resume(&mut self) {}
+
+    /// Processamento de eventos e gestos unificados de entrada (toque capacitivo, mouse, pinça e arraste).
+    fn on_input(&mut self, _input: &crate::input::InputManager) {}
 }
 
 /// Configuração do host da engine.

@@ -2,8 +2,9 @@
 #![forbid(unsafe_code)]
 
 use engine::{
-    App, BitmapFont, Camera2D, Color, EngineConfig, GameState, IsometricProjection, Rect,
-    RenderQueue, RgbaImage, SpriteBatch, TextureAtlas,
+    App, BitmapFont, Camera2D, Color, EngineConfig, GameState, InputManager,
+    IsometricProjection, MouseButton, Rect, RenderQueue, RgbaImage, SpriteBatch, TextureAtlas,
+    TouchPhase,
 };
 use game_core::{
     BattleSession, Combatant, CropCatalog, ElementRegistry, ElementalChart, HabitatCatalog,
@@ -234,12 +235,19 @@ impl GameState for BestigardGame {
         );
     }
 
-    fn on_pause(&mut self) {
-        println!("Bestigard suspenso (background mobile)");
-    }
-
     fn on_resume(&mut self) {
         println!("Bestigard retomado (foreground mobile)");
+    }
+
+    fn on_input(&mut self, input: &InputManager) {
+        input.apply_to_camera(&mut self.camera);
+        for tap in input.taps() {
+            let cell = self.camera.screen_to_grid_cell(tap.x, tap.y, &self.projection);
+            println!(
+                "Entrada Unificada: Tap capturado em ({:.0}, {:.0}) -> Célula da ilha selecionada: ({}, {})",
+                tap.x, tap.y, cell.0, cell.1
+            );
+        }
     }
 }
 
@@ -391,5 +399,45 @@ fn main() {
     println!(
         "Renderizador de Texto: Rótulo 'OURO: 620' medido em {:.0}x{:.0} px (ASCII 5x7 embutido com suporte a cores).",
         label_w, label_h
+    );
+
+    // 11. Demonstração de Entradas Unificadas Mobile/Desktop (Tap, Drag, Pinch-to-Zoom)
+    println!("\n--- SISTEMA UNIFICADO DE ENTRADA & GESTOS (INPUT) ---");
+    let mut test_input = InputManager::new();
+
+    // A) Simula toque rápido capacitivo com 1 dedo (Tap)
+    test_input.on_touch(TouchPhase::Started, 10, 540.0, 960.0);
+    test_input.on_touch(TouchPhase::Ended, 10, 540.0, 960.0);
+    state.on_input(&test_input);
+    test_input.clear_events();
+
+    // B) Simula gesto de pinça capacitiva com 2 dedos (Pinch-to-zoom)
+    test_input.on_touch(TouchPhase::Started, 1, 440.0, 960.0);
+    test_input.on_touch(TouchPhase::Started, 2, 640.0, 960.0);
+    test_input.on_touch(TouchPhase::Moved, 1, 390.0, 960.0);
+    test_input.on_touch(TouchPhase::Moved, 2, 690.0, 960.0);
+    state.on_input(&test_input);
+
+    let pinch_events: Vec<_> = test_input
+        .events()
+        .iter()
+        .filter(|e| matches!(e, engine::InputEvent::PinchZoom { .. }))
+        .collect();
+    println!(
+        "Touchscreen Mobile: Gesto de pinça com 2 dedos detectado ({} eventos gerados). Novo Zoom da Câmera: {:.2}x",
+        pinch_events.len(),
+        state.camera.zoom
+    );
+    test_input.clear_events();
+
+    // C) Simula clique e arraste com mouse desktop (Pan)
+    test_input.on_mouse_button_down(MouseButton::Left, 500.0, 500.0);
+    test_input.on_mouse_motion(450.0, 480.0);
+    test_input.on_mouse_button_up(MouseButton::Left, 450.0, 480.0);
+    state.on_input(&test_input);
+
+    println!(
+        "Mouse Desktop: Arraste de tela processado com sucesso. Posição da Câmera: ({:.1}, {:.1})",
+        state.camera.position.x, state.camera.position.y
     );
 }
