@@ -24,6 +24,16 @@ impl Effectiveness {
             Self::SuperEffective => 2.0,
         }
     }
+
+    /// Rótulo descritivo de vantagem tática em combate.
+    pub fn tactical_label(&self) -> &'static str {
+        match self {
+            Self::Immune => "0.0x IMUNE",
+            Self::Resisted => "0.5x RESISTIDO",
+            Self::Neutral => "1.0x NEUTRO",
+            Self::SuperEffective => "2.0x SUPER EFETIVO!",
+        }
+    }
 }
 
 /// Matriz de afinidades e fraquezas elementais orientada a dados.
@@ -114,6 +124,20 @@ impl ElementalChart {
         }
 
         multiplier
+    }
+
+    /// Retorna o rótulo descritivo formatado do multiplicador tático combinado.
+    pub fn tactical_label(&self, attacker_element: &ElementId, defender_elements: &[ElementId]) -> &'static str {
+        let mult = self.calculate_multiplier(attacker_element, defender_elements);
+        if mult >= 2.0 {
+            "2.0x SUPER EFETIVO!"
+        } else if mult == 0.0 {
+            "0.0x IMUNE"
+        } else if mult < 1.0 {
+            "0.5x RESISTIDO"
+        } else {
+            "1.0x NEUTRO"
+        }
     }
 }
 
@@ -429,7 +453,13 @@ mod tests {
         assert_eq!(chart.calculate_multiplier(&lightning, &[earth.clone()]), 0.0);
 
         // Água em criatura híbrida (Fogo + Terra) = 2.0 * 2.0 = 4.0x de dano quadruplicado!
-        assert_eq!(chart.calculate_multiplier(&water, &[fire, earth]), 4.0);
+        assert_eq!(chart.calculate_multiplier(&water, &[fire.clone(), earth.clone()]), 4.0);
+
+        // Feedback de vantagem tática
+        assert_eq!(chart.tactical_label(&water, &[fire.clone()]), "2.0x SUPER EFETIVO!");
+        assert_eq!(chart.tactical_label(&fire, &[water.clone()]), "0.5x RESISTIDO");
+        assert_eq!(chart.tactical_label(&lightning, &[earth.clone()]), "0.0x IMUNE");
+        assert_eq!(Effectiveness::SuperEffective.tactical_label(), "2.0x SUPER EFETIVO!");
     }
 
     #[test]

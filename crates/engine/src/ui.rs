@@ -31,8 +31,23 @@ impl UiColor {
     pub const XP_FILL: Color = Color::rgba(0.25, 0.70, 0.95, 0.95);
     /// Barra de preenchimento de Ouro / Recursos.
     pub const GOLD_FILL: Color = Color::rgba(1.0, 0.85, 0.20, 0.95);
+    /// Cores da barra de vida (HP) de combate de acordo com o percentual restante.
+    pub const HP_HEALTHY: Color = Color::rgba(0.20, 0.85, 0.35, 0.95);
+    pub const HP_CAUTION: Color = Color::rgba(0.95, 0.80, 0.20, 0.95);
+    pub const HP_CRITICAL: Color = Color::rgba(0.90, 0.25, 0.25, 0.95);
     /// Escurecimento do cenário de fundo ao exibir janela modal (backdrop dimming).
     pub const BACKDROP_DIM: Color = Color::rgba(0.0, 0.0, 0.0, 0.65);
+
+    /// Retorna a cor adequada para a barra de HP com base na proporção (0.0 a 1.0).
+    pub fn hp_bar_color(ratio: f32) -> Color {
+        if ratio > 0.50 {
+            Self::HP_HEALTHY
+        } else if ratio > 0.25 {
+            Self::HP_CAUTION
+        } else {
+            Self::HP_CRITICAL
+        }
+    }
 }
 
 /// Ações originadas por interação do usuário com os elementos da interface.
@@ -505,5 +520,12 @@ mod tests {
 
         let bar_neg = UiProgressBar::new(Rect::new(0.0, 0.0, 100.0, 20.0), -0.5, Color::WHITE);
         assert_eq!(bar_neg.ratio, 0.0);
+    }
+
+    #[test]
+    fn test_ui_hp_bar_color() {
+        assert_eq!(UiColor::hp_bar_color(0.8), UiColor::HP_HEALTHY);
+        assert_eq!(UiColor::hp_bar_color(0.4), UiColor::HP_CAUTION);
+        assert_eq!(UiColor::hp_bar_color(0.1), UiColor::HP_CRITICAL);
     }
 }

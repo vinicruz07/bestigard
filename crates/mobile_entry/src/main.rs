@@ -8,9 +8,9 @@ use engine::{
     UiModal, UiProgressBar,
 };
 use game_core::{
-    BattleSession, Combatant, CropCatalog, ElementRegistry, ElementalChart, HabitatCatalog,
-    IncubationSpeedModifier, MilestoneCatalog, ModifierSource, ObstacleKind, SanctuaryWorld,
-    SpeciesCatalog, FARM_BUILD_COST_GOLD,
+    BattleOutcome, BattleSession, Combatant, CropCatalog, ElementRegistry, ElementalChart,
+    HabitatCatalog, IncubationSpeedModifier, MilestoneCatalog, ModifierSource, ObstacleKind,
+    SanctuaryWorld, SpeciesCatalog, FARM_BUILD_COST_GOLD,
 };
 
 /// Estrutura que o jogador está posicionando no modo de construção.
@@ -27,6 +27,17 @@ pub struct PlacementSession {
     pub label: String,
     pub cost: u64,
     pub cursor: PlacementCursor,
+}
+
+/// Sessão ativa de combate na Arena Elemental: combatentes, registro e recompensas.
+#[derive(Debug, Clone)]
+pub struct ArenaSessionState {
+    pub battle: BattleSession,
+    pub player_creature_id: u64,
+    pub last_action_log: Option<String>,
+    pub reward_gold: u64,
+    pub reward_xp: u64,
+    pub rewards_claimed: bool,
 }
 
 pub struct BestigardGame {
@@ -48,6 +59,7 @@ pub struct BestigardGame {
     pub selected_habitat_id: Option<u64>,
     pub selected_obstacle_id: Option<u64>,
     pub placement: Option<PlacementSession>,
+    pub arena: Option<ArenaSessionState>,
     frames_rendered: u64,
     ticks_processed: u64,
 }
@@ -96,6 +108,7 @@ impl BestigardGame {
             selected_habitat_id: None,
             selected_obstacle_id: None,
             placement: None,
+            arena: None,
             frames_rendered: 0,
             ticks_processed: 0,
         };
@@ -107,23 +120,28 @@ impl BestigardGame {
     fn configure_hud_buttons(&mut self) {
         self.ui.clear_global_buttons();
         self.ui.add_global_button(
-            UiButton::new("btn_collect_all", Rect::new(480.0, 24.0, 135.0, 56.0), "COLETAR")
+            UiButton::new("btn_collect_all", Rect::new(450.0, 24.0, 112.0, 56.0), "COLETAR")
                 .with_colors(UiColor::BTN_PRIMARY, Color::WHITE)
                 .with_scale(1.8),
         );
         self.ui.add_global_button(
-            UiButton::new("btn_open_creature", Rect::new(622.0, 24.0, 135.0, 56.0), "CRIATURA")
+            UiButton::new("btn_open_creature", Rect::new(570.0, 24.0, 112.0, 56.0), "CRIATURA")
                 .with_colors(UiColor::BTN_ACCENT, Color::WHITE)
                 .with_scale(1.8),
         );
         self.ui.add_global_button(
-            UiButton::new("btn_open_breeding", Rect::new(764.0, 24.0, 135.0, 56.0), "CRUZAR")
+            UiButton::new("btn_open_breeding", Rect::new(690.0, 24.0, 112.0, 56.0), "CRUZAR")
                 .with_colors(UiColor::GOLD_ACCENT, Color::rgb(0.08, 0.12, 0.22))
                 .with_scale(1.8),
         );
         self.ui.add_global_button(
-            UiButton::new("btn_open_shop", Rect::new(906.0, 24.0, 135.0, 56.0), "LOJA")
+            UiButton::new("btn_open_shop", Rect::new(810.0, 24.0, 112.0, 56.0), "LOJA")
                 .with_colors(UiColor::BTN_SECONDARY, Color::WHITE)
+                .with_scale(1.8),
+        );
+        self.ui.add_global_button(
+            UiButton::new("btn_open_arena", Rect::new(930.0, 24.0, 115.0, 56.0), "ARENA")
+                .with_colors(UiColor::BTN_DANGER, Color::WHITE)
                 .with_scale(1.8),
         );
     }
@@ -634,6 +652,298 @@ impl BestigardGame {
 
         self.ui.open_modal(modal);
     }
+
+    /// Inicia uma nova sessão de combate na Arena Elemental contra uma criatura desafiante.
+    pub fn start_arena_battle(&mut self) {
+        let cid = self.selected_creature_id.or_else(|| self.world.creatures.keys().next().copied());
+        let Some(player_cid) = cid else {
+            return;
+        };
+        let Some(creature) = self.world.creatures.get(&player_cid).cloned() else {
+            return;
+        };
+        let Some(player_spec) = self.catalog.get(&creature.species_id).cloned() else {
+            return;
+        };
+
+        let player_fighter = Combatant::from_creature(&creature, &player_spec);
+
+        // Oponente elemental da Arena (Stone Golem de Terra)
+        let enemy_spec = self
+            .catalog
+            .get("stone_golem")
+            .cloned()
+            .unwrap_or_else(|| player_spec.clone());
+        let mut enemy_instance = game_core::CreatureInstance::new(8888, &enemy_spec.id);
+        enemy_instance.level = creature.level;
+        let enemy_fighter = Combatant::from_creature(&enemy_instance, &enemy_spec);
+
+        let battle = BattleSession::new(vec![player_fighter], vec![enemy_fighter]);
+        self.arena = Some(ArenaSessionState {
+            battle,
+            player_creature_id: player_cid,
+            last_action_log: None,
+            reward_gold: 150,
+            reward_xp: 80,
+            rewards_claimed: false,
+        });
+        self.open_arena_modal();
+    }
+
+    /// Abre ou atualiza o diálogo modal da Arena Elemental de Combate.
+    pub fn open_arena_modal(&mut self) {
+        let Some(ref arena) = self.arena else {
+            self.start_arena_battle();
+            return;
+        };
+
+        let ally = match arena
+            .battle
+            .active_player_combatant()
+            .cloned()
+            .or_else(|| arena.battle.player_team.first().cloned())
+        {
+            Some(a) => a,
+            None => return,
+        };
+        let enemy = match arena
+            .battle
+            .active_enemy_combatant()
+            .cloned()
+            .or_else(|| arena.battle.enemy_team.first().cloned())
+        {
+            Some(e) => e,
+            None => return,
+        };
+
+        let mut modal = UiModal::new(
+            "modal_arena",
+            "ARENA ELEMENTAL DE BATALHA",
+            Rect::new(100.0, 200.0, 880.0, 780.0),
+        );
+
+        // 1. Painel do Oponente
+        let enemy_el = enemy
+            .elements
+            .iter()
+            .map(|e| e.as_str().to_uppercase())
+            .collect::<Vec<_>>()
+            .join("/");
+        modal.add_text(
+            format!("OPONENTE: {} [{}]", enemy.name.to_uppercase(), enemy_el),
+            130.0,
+            260.0,
+            1.8,
+            Color::rgb(1.0, 0.45, 0.45),
+        );
+        let enemy_ratio = (enemy.current_hp as f32 / enemy.max_hp.max(1) as f32).clamp(0.0, 1.0);
+        modal.add_text(
+            format!(
+                "HP: {} / {} ({:.0}%) | VELOCIDADE: {}",
+                enemy.current_hp,
+                enemy.max_hp,
+                enemy_ratio * 100.0,
+                enemy.speed
+            ),
+            130.0,
+            295.0,
+            1.6,
+            Color::WHITE,
+        );
+        modal.add_progress_bar(UiProgressBar::new(
+            Rect::new(130.0, 325.0, 820.0, 22.0),
+            enemy_ratio,
+            UiColor::hp_bar_color(enemy_ratio),
+        ));
+
+        // 2. Painel do Aliado
+        let ally_el = ally
+            .elements
+            .iter()
+            .map(|e| e.as_str().to_uppercase())
+            .collect::<Vec<_>>()
+            .join("/");
+        let initiative_label = if ally.speed >= enemy.speed {
+            " (INICIATIVA 1o)"
+        } else {
+            " (2o NO TURNO)"
+        };
+        modal.add_text(
+            format!(
+                "ALIADO: {} [{}]{}",
+                ally.name.to_uppercase(),
+                ally_el,
+                initiative_label
+            ),
+            130.0,
+            370.0,
+            1.8,
+            Color::rgb(0.45, 0.85, 1.0),
+        );
+        let ally_ratio = (ally.current_hp as f32 / ally.max_hp.max(1) as f32).clamp(0.0, 1.0);
+        modal.add_text(
+            format!(
+                "HP: {} / {} ({:.0}%) | VELOCIDADE: {}",
+                ally.current_hp,
+                ally.max_hp,
+                ally_ratio * 100.0,
+                ally.speed
+            ),
+            130.0,
+            405.0,
+            1.6,
+            Color::WHITE,
+        );
+        modal.add_progress_bar(UiProgressBar::new(
+            Rect::new(130.0, 435.0, 820.0, 22.0),
+            ally_ratio,
+            UiColor::hp_bar_color(ally_ratio),
+        ));
+
+        // 3. Log de Ação do Turno Anterior
+        let log_msg = arena
+            .last_action_log
+            .as_deref()
+            .unwrap_or("Escolha uma habilidade elementar para executar o round!");
+        modal.add_text(log_msg, 130.0, 480.0, 1.5, UiColor::GOLD_ACCENT);
+
+        // 4. Seção Inferior: Seleção de Habilidades OU Tela de Desfecho
+        match arena.battle.outcome {
+            BattleOutcome::Ongoing => {
+                modal.add_text(
+                    format!("TURNO {} - HABILIDADES DE COMBATE:", arena.battle.current_turn),
+                    130.0,
+                    525.0,
+                    1.7,
+                    Color::WHITE,
+                );
+
+                let mut y_btn = 560.0;
+                for (idx, skill) in ally.skills.iter().enumerate() {
+                    let cd = ally.skill_cooldowns.get(&skill.id).copied().unwrap_or(0);
+                    let is_ready = cd == 0;
+                    let tactical_tag = self
+                        .elemental_chart
+                        .tactical_label(&skill.element, &enemy.elements);
+
+                    let label = if is_ready {
+                        format!(
+                            "{}: PODER {} [{}] | {}",
+                            skill.name.to_uppercase().replace("Á", "A").replace("Ã", "A"),
+                            skill.base_power,
+                            skill.element.as_str().to_uppercase(),
+                            tactical_tag
+                        )
+                    } else {
+                        format!(
+                            "{}: RECARGA ({} TURNOS)",
+                            skill.name.to_uppercase().replace("Á", "A").replace("Ã", "A"),
+                            cd
+                        )
+                    };
+
+                    let btn = UiButton::new(
+                        format!("arena_skill:{}", idx),
+                        Rect::new(130.0, y_btn, 820.0, 56.0),
+                        label,
+                    )
+                    .with_colors(
+                        if is_ready {
+                            UiColor::BTN_PRIMARY
+                        } else {
+                            UiColor::BTN_DISABLED
+                        },
+                        Color::WHITE,
+                    )
+                    .with_disabled(!is_ready)
+                    .with_scale(1.7);
+
+                    modal.add_button(btn);
+                    y_btn += 66.0;
+                }
+            }
+            BattleOutcome::PlayerVictory => {
+                modal.add_text(
+                    "VITORIA GLORIOSA NA ARENA!",
+                    130.0,
+                    530.0,
+                    2.2,
+                    UiColor::GOLD_ACCENT,
+                );
+                modal.add_text(
+                    format!(
+                        "RECOMPENSAS: +{} OURO  |  +{} XP DE BATALHA",
+                        arena.reward_gold, arena.reward_xp
+                    ),
+                    130.0,
+                    575.0,
+                    1.8,
+                    Color::WHITE,
+                );
+
+                if !arena.rewards_claimed {
+                    modal.add_button(
+                        UiButton::new(
+                            "arena_claim_rewards",
+                            Rect::new(150.0, 630.0, 780.0, 68.0),
+                            "REIVINDICAR RECOMPENSAS",
+                        )
+                        .with_colors(UiColor::BTN_PRIMARY, Color::WHITE)
+                        .with_scale(2.0),
+                    );
+                } else {
+                    modal.add_text(
+                        "Recompensas depositadas com sucesso no Santuario e na Criatura!",
+                        130.0,
+                        625.0,
+                        1.6,
+                        UiColor::XP_FILL,
+                    );
+                    modal.add_button(
+                        UiButton::new(
+                            "arena_close",
+                            Rect::new(150.0, 675.0, 780.0, 64.0),
+                            "CONCLUIR E RETORNAR AO SANTUARIO",
+                        )
+                        .with_colors(UiColor::BTN_SECONDARY, Color::WHITE)
+                        .with_scale(1.9),
+                    );
+                }
+            }
+            BattleOutcome::EnemyVictory | BattleOutcome::Draw => {
+                let msg = if arena.battle.outcome == BattleOutcome::Draw {
+                    "EMPATE! COMBATE TERMINOU SEM VENCEDOR"
+                } else {
+                    "DERROTA! SUA CRIATURA FOI DERROTADA..."
+                };
+                modal.add_text(
+                    msg,
+                    130.0,
+                    530.0,
+                    2.2,
+                    UiColor::BTN_DANGER,
+                );
+                modal.add_text(
+                    "Alimente e evolua suas criaturas para superar este desafio elemental.",
+                    130.0,
+                    575.0,
+                    1.6,
+                    Color::WHITE,
+                );
+                modal.add_button(
+                    UiButton::new(
+                        "arena_close",
+                        Rect::new(150.0, 640.0, 780.0, 68.0),
+                        "RETORNAR AO SANTUARIO",
+                    )
+                    .with_colors(UiColor::BTN_SECONDARY, Color::WHITE)
+                    .with_scale(1.9),
+                );
+            }
+        }
+
+        self.ui.open_modal(modal);
+    }
 }
 
 impl Default for BestigardGame {
@@ -1001,12 +1311,75 @@ impl GameState for BestigardGame {
                                 }
                             }
                         }
+                        "btn_open_arena" => {
+                            self.start_arena_battle();
+                        }
+                        id if id.starts_with("arena_skill:") => {
+                            let idx_str = &id["arena_skill:".len()..];
+                            if let Ok(skill_idx) = idx_str.parse::<usize>() {
+                                if let Some(ref mut arena) = self.arena {
+                                    let (log1, log2) = arena
+                                        .battle
+                                        .execute_round(skill_idx, &self.elemental_chart);
+                                    let mut summary = String::new();
+                                    if let Some(l1) = log1 {
+                                        summary.push_str(&format!(
+                                            "{}: {} ({} dano, {:.1}x)",
+                                            l1.attacker_name,
+                                            l1.skill_name,
+                                            l1.raw_damage,
+                                            l1.elemental_multiplier
+                                        ));
+                                    }
+                                    if let Some(l2) = log2 {
+                                        if !summary.is_empty() {
+                                            summary.push_str(" | ");
+                                        }
+                                        summary.push_str(&format!(
+                                            "{}: {} ({} dano)",
+                                            l2.attacker_name, l2.skill_name, l2.raw_damage
+                                        ));
+                                    }
+                                    arena.last_action_log = Some(summary);
+                                }
+                                self.open_arena_modal();
+                            }
+                        }
+                        "arena_claim_rewards" => {
+                            if let Some(ref mut arena) = self.arena {
+                                if !arena.rewards_claimed {
+                                    arena.rewards_claimed = true;
+                                    let gold = arena.reward_gold;
+                                    let xp = arena.reward_xp;
+                                    let cid = arena.player_creature_id;
+                                    self.world.gold += gold;
+                                    if let Some(creature) = self.world.creatures.get_mut(&cid) {
+                                        creature.add_xp(xp);
+                                    }
+                                    println!(
+                                        "Arena: Recompensas reivindicadas! +{} ouro, +{} XP na Criatura #{}.",
+                                        gold, xp, cid
+                                    );
+                                }
+                            }
+                            self.open_arena_modal();
+                        }
+                        "arena_close" => {
+                            self.arena = None;
+                            self.ui.close_modal();
+                            println!("Arena: Batalha concluida. Retornando ao santuario.");
+                        }
                         _ => {}
                     }
                 }
                 UiAction::ModalClosed => {
                     handled_tap = true;
-                    println!("UI: Modal fechado pelo usuário.");
+                    if self.arena.is_some() {
+                        self.arena = None;
+                        println!("UI: Arena encerrada ao fechar modal.");
+                    } else {
+                        println!("UI: Modal fechado pelo usuário.");
+                    }
                 }
                 UiAction::None => {}
             }
@@ -1173,17 +1546,17 @@ fn main() {
     println!("\n--- INTERFACE DE USUÁRIO (HUD & MENUS MODAIS) ---");
 
     // A) Toque no botão global do HUD: [COLETAR]
-    println!("1. Testando toque no botão de HUD [COLETAR OURO] (pos: 600, 40)...");
+    println!("1. Testando toque no botão de HUD [COLETAR OURO] (pos: 500, 40)...");
     let mut hud_input = InputManager::new();
-    hud_input.on_mouse_button_down(MouseButton::Left, 600.0, 40.0);
-    hud_input.on_mouse_button_up(MouseButton::Left, 600.0, 40.0);
+    hud_input.on_mouse_button_down(MouseButton::Left, 500.0, 40.0);
+    hud_input.on_mouse_button_up(MouseButton::Left, 500.0, 40.0);
     state.on_input(&hud_input);
     hud_input.clear_events();
 
     // B) Toque no botão global do HUD: [CRIATURA] para abrir modal de inspeção
-    println!("\n2. Abrindo diálogo modal de Gestão da Criatura Ignis [CRIATURA] (pos: 750, 40)...");
-    hud_input.on_mouse_button_down(MouseButton::Left, 750.0, 40.0);
-    hud_input.on_mouse_button_up(MouseButton::Left, 750.0, 40.0);
+    println!("\n2. Abrindo diálogo modal de Gestão da Criatura Ignis [CRIATURA] (pos: 620, 40)...");
+    hud_input.on_mouse_button_down(MouseButton::Left, 620.0, 40.0);
+    hud_input.on_mouse_button_up(MouseButton::Left, 620.0, 40.0);
     state.on_input(&hud_input);
     hud_input.clear_events();
     assert!(state.ui.is_modal_open());
@@ -1214,9 +1587,9 @@ fn main() {
         creature.stage = game_core::GrowthStage::from_level(4);
     }
 
-    println!("Abrindo modal do [CRUZAMENTO] (pos: 830, 40)...");
-    hud_input.on_mouse_button_down(MouseButton::Left, 830.0, 40.0);
-    hud_input.on_mouse_button_up(MouseButton::Left, 830.0, 40.0);
+    println!("Abrindo modal do [CRUZAMENTO] (pos: 740, 40)...");
+    hud_input.on_mouse_button_down(MouseButton::Left, 740.0, 40.0);
+    hud_input.on_mouse_button_up(MouseButton::Left, 740.0, 40.0);
     state.on_input(&hud_input);
     hud_input.clear_events();
     assert!(state.ui.is_modal_open());
@@ -1265,8 +1638,8 @@ fn main() {
     let habitats_before = state.world.habitats.len();
     let gold_before = state.world.gold;
 
-    println!("1. Tocando em [LOJA] (pos: 970, 40) e escolhendo [HABITAT WATER]...");
-    tap_at(state, 970.0, 40.0);
+    println!("1. Tocando em [LOJA] (pos: 860, 40) e escolhendo [HABITAT WATER]...");
+    tap_at(state, 860.0, 40.0);
     assert!(state.ui.is_modal_open());
     tap_at(state, 400.0, 780.0);
     assert!(state.placement.is_some());
@@ -1299,7 +1672,7 @@ fn main() {
     );
 
     println!("5. Cancelamento: abrindo [LOJA] -> [FAZENDA] e cancelando em [CANCELAR] (pos: 740, 1788)...");
-    tap_at(state, 970.0, 40.0);
+    tap_at(state, 860.0, 40.0);
     tap_at(state, 400.0, 840.0);
     assert!(state.placement.is_some());
     let gold_after_build = state.world.gold;
@@ -1323,6 +1696,74 @@ fn main() {
         state.world.obstacles.len()
     );
 
+    // 10. Demonstração e Verificação da Interface de Combate Elemental e Arena de Batalha (Passo 5.4)
+    println!("\n--- ARENA ELEMENTAL DE BATALHA & UI INTERATIVA (PASSO 5.4) ---");
+    let gold_before_arena = state.world.gold;
+
+    println!("1. Abrindo Arena Elemental de Batalha via botão [ARENA] no HUD (pos: 980, 40)...");
+    tap_at(state, 980.0, 40.0);
+    assert!(state.ui.is_modal_open());
+    assert!(state.arena.is_some());
+    let arena_state = state.arena.as_ref().unwrap();
+    assert_eq!(arena_state.battle.current_turn, 1);
+    assert_eq!(arena_state.battle.outcome, BattleOutcome::Ongoing);
+    println!(
+        "Arena iniciada! Combatentes: Aliado '{}' (HP {}) vs Inimigo '{}' (HP {})",
+        arena_state.battle.player_team.first().unwrap().name,
+        arena_state.battle.player_team.first().unwrap().current_hp,
+        arena_state.battle.enemy_team.first().unwrap().name,
+        arena_state.battle.enemy_team.first().unwrap().current_hp,
+    );
+
+    println!("2. Executando habilidade de ataque [GOLPE DE FOGO] (pos: 400, 588)...");
+    tap_at(state, 400.0, 588.0);
+    assert!(state.arena.is_some());
+    println!(
+        "Log de combate após round 1: {:?}",
+        state.arena.as_ref().unwrap().last_action_log
+    );
+
+    println!("3. Executando habilidade super-efetiva até desfecho da batalha...");
+    while state.arena.as_ref().unwrap().battle.outcome == BattleOutcome::Ongoing {
+        tap_at(state, 400.0, 588.0);
+    }
+
+    assert_eq!(
+        state.arena.as_ref().unwrap().battle.outcome,
+        BattleOutcome::PlayerVictory
+    );
+    println!(
+        "Vitória alcançada na Arena! Desfecho: {:?}",
+        state.arena.as_ref().unwrap().battle.outcome
+    );
+
+    println!("4. Reivindicando recompensas de ouro e XP no diálogo de vitória (pos: 400, 664)...");
+    let fighter_id = state.arena.as_ref().unwrap().player_creature_id;
+    let fighter_level_before = state.world.creatures.get(&fighter_id).unwrap().level;
+    tap_at(state, 400.0, 664.0);
+    assert!(state.arena.as_ref().unwrap().rewards_claimed);
+    assert_eq!(state.world.gold, gold_before_arena + 150);
+    let fighter_after = state.world.creatures.get(&fighter_id).unwrap();
+    assert!(
+        fighter_after.level > fighter_level_before || fighter_after.xp > 0,
+        "XP ou Nível da criatura combatente deve ter progredido com a recompensa"
+    );
+    println!(
+        "Recompensas injetadas! Ouro do Santuário: {} -> {}. Criatura #{}: Nível {} (XP {}).",
+        gold_before_arena,
+        state.world.gold,
+        fighter_id,
+        fighter_after.level,
+        fighter_after.xp,
+    );
+
+    println!("5. Concluindo duelo e fechando modal de Arena (pos: 400, 707)...");
+    tap_at(state, 400.0, 707.0);
+    assert!(state.arena.is_none());
+    assert!(!state.ui.is_modal_open());
+    println!("Arena fechada e santuário restaurado com sucesso!");
+
     println!("\n>> Interface de Usuário (HUD e Menus Modais) validada com 100% de sucesso! <<");
     println!(">> Modo de Construção e Limpeza de Terreno validados com 100% de sucesso! <<");
+    println!(">> Arena Elemental de Batalha e UI Interativa validadas com 100% de sucesso! <<");
 }
