@@ -193,6 +193,30 @@ impl SpriteBatch {
         let c = [color.r, color.g, color.b, color.a];
         self.push_quad(points, uvs, [c, c, c, c])
     }
+
+    /// Desenha um retângulo com coordenadas UV arbitrárias (usado para texto e sub-regiões de texturas).
+    pub fn draw_textured_rect(
+        &mut self,
+        dest: Rect,
+        uv_min: (f32, f32),
+        uv_max: (f32, f32),
+        color: Color,
+    ) -> bool {
+        let points = [
+            dest.top_left().into(),
+            dest.top_right().into(),
+            dest.bottom_right().into(),
+            dest.bottom_left().into(),
+        ];
+        let uvs = [
+            [uv_min.0, uv_min.1],
+            [uv_max.0, uv_min.1],
+            [uv_max.0, uv_max.1],
+            [uv_min.0, uv_max.1],
+        ];
+        let c = [color.r, color.g, color.b, color.a];
+        self.push_quad(points, uvs, [c, c, c, c])
+    }
 }
 
 impl Default for SpriteBatch {

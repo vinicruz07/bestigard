@@ -2,8 +2,8 @@
 #![forbid(unsafe_code)]
 
 use engine::{
-    App, Camera2D, Color, EngineConfig, GameState, IsometricProjection, Rect, RenderQueue,
-    SpriteBatch, TextureAtlas,
+    App, BitmapFont, Camera2D, Color, EngineConfig, GameState, IsometricProjection, Rect,
+    RenderQueue, RgbaImage, SpriteBatch, TextureAtlas,
 };
 use game_core::{
     BattleSession, Combatant, CropCatalog, ElementRegistry, ElementalChart, HabitatCatalog,
@@ -23,6 +23,7 @@ pub struct BestigardGame {
     pub camera: Camera2D,
     pub projection: IsometricProjection,
     pub render_queue: RenderQueue,
+    pub font: BitmapFont,
     frames_rendered: u64,
     ticks_processed: u64,
 }
@@ -63,6 +64,7 @@ impl BestigardGame {
             camera,
             projection,
             render_queue: RenderQueue::new(),
+            font: BitmapFont::default_font(),
             frames_rendered: 0,
             ticks_processed: 0,
         }
@@ -204,6 +206,32 @@ impl GameState for BestigardGame {
 
         // Flush com ordenação de profundidade automática (Y-Sort) diretamente no SpriteBatch
         self.render_queue.flush_to_batch(&mut self.batch);
+
+        // 5. Renderização de Texto com BitmapFont
+        self.font.draw_text(
+            &mut self.batch,
+            &format!("OURO: {}", self.world.gold),
+            95.0,
+            48.0,
+            2.0,
+            Color::rgb(1.0, 0.85, 0.2),
+        );
+        self.font.draw_text(
+            &mut self.batch,
+            &format!("COMIDA: {}", self.world.food),
+            315.0,
+            48.0,
+            2.0,
+            Color::rgb(0.4, 0.9, 0.3),
+        );
+        self.font.draw_text(
+            &mut self.batch,
+            "BESTIGARD SANCTUARY",
+            40.0,
+            110.0,
+            1.8,
+            Color::WHITE,
+        );
     }
 
     fn on_pause(&mut self) {
@@ -347,4 +375,21 @@ fn main() {
     println!("RenderQueue com 4 camadas ativas: Ground -> GroundDecal -> Entities (Y-Sorted) -> Ui");
     println!("Criatura Vulcânica (Grid 2.5, 2.5) renderizada ATRÁS do Habitat (Grid 3.0, 3.0).");
     println!("Criatura Pírica (Grid 3.5, 3.5) renderizada NA FRENTE do Habitat (Grid 3.0, 3.0).");
+
+    // 10. Demonstração de Carregamento de Texturas & Renderização de Texto
+    println!("\n--- CARREGAMENTO DE TEXTURAS & FONTES BITMAP ---");
+    let (atlas_img, from_disk) =
+        RgbaImage::load_or_fallback("assets/sprites/creatures_atlas.png", 512, 512);
+    println!(
+        "Carregador de Textura: 'assets/sprites/creatures_atlas.png' -> {} (Resolução: {}x{} px).",
+        if from_disk { "Carregado do disco com sucesso" } else { "PNG ausente -> Gerado fallback procedural automático (Pronto para substituição imediata)" },
+        atlas_img.width,
+        atlas_img.height
+    );
+
+    let (label_w, label_h) = state.font.measure_text("OURO: 620", 2.0);
+    println!(
+        "Renderizador de Texto: Rótulo 'OURO: 620' medido em {:.0}x{:.0} px (ASCII 5x7 embutido com suporte a cores).",
+        label_w, label_h
+    );
 }

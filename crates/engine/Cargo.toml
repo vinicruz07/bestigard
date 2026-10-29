@@ -9,3 +9,4 @@ game_core = { path = "../game_core" }
 miniquad = "0.4.11"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
+png = "0.17"
