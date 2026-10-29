@@ -13,6 +13,7 @@ pub mod isometric;
 pub mod render;
 pub mod texture;
 pub mod time;
+pub mod ui;
 
 pub use app::{App, EngineConfig, GameState};
 pub use atlas::{AtlasRegion, TextureAtlas};
@@ -27,3 +28,5 @@ pub use isometric::IsometricProjection;
 pub use render::{RenderCommand, RenderLayer, RenderQueue};
 pub use texture::RgbaImage;
 pub use time::TimeStep;
+pub use ui::{UiAction, UiButton, UiColor, UiManager, UiModal, UiProgressBar};
+

@@ -2,6 +2,7 @@
 #![forbid(unsafe_code)]
 
 use crate::bestiary::{Bestiary, MilestoneCatalog, MilestoneReward};
+use crate::breeding::{BreedingEngine, BreedingError, BreedingResult};
 use crate::creature::{CreatureInstance, CreatureSpecies, SpeciesCatalog};
 use crate::farming::{CropType, FarmError, FarmInstance, FeedResult, FeedingError, FeedingSystem};
 use crate::habitat::{HabitatCatalog, HabitatError, HabitatInstance, IslandGrid};
@@ -16,8 +17,10 @@ pub enum WorldError {
     Farm(FarmError),
     Hatchery(HatcheryError),
     Feeding(FeedingError),
+    Breeding(BreedingError),
     CreatureNotFound(u64),
     FarmNotFound(u64),
+    SpeciesNotFound(String),
     InsufficientGold { required: u64, available: u64 },
 }
 
@@ -45,6 +48,12 @@ impl From<FeedingError> for WorldError {
     }
 }
 
+impl From<BreedingError> for WorldError {
+    fn from(err: BreedingError) -> Self {
+        Self::Breeding(err)
+    }
+}
+
 impl std::fmt::Display for WorldError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
@@ -52,8 +61,10 @@ impl std::fmt::Display for WorldError {
             Self::Farm(e) => write!(f, "Erro de fazenda: {}", e),
             Self::Hatchery(e) => write!(f, "Erro de incubadora: {}", e),
             Self::Feeding(e) => write!(f, "Erro de alimentação: {}", e),
+            Self::Breeding(e) => write!(f, "Erro de cruzamento: {}", e),
             Self::CreatureNotFound(id) => write!(f, "Criatura #{} não encontrada no santuário", id),
             Self::FarmNotFound(id) => write!(f, "Fazenda #{} não encontrada", id),
+            Self::SpeciesNotFound(id) => write!(f, "Espécie '{}' não encontrada no catálogo", id),
             Self::InsufficientGold { required, available } => {
                 write!(f, "Ouro insuficiente: necessário {}, disponível {}", required, available)
             }
@@ -281,6 +292,43 @@ impl SanctuaryWorld {
         Ok(egg_id)
     }
 
+    /// Realiza o cruzamento genético determinístico entre duas criaturas e deposita o ovo resultante no ninho.
+    pub fn breed_creatures(
+        &mut self,
+        parent_a_id: u64,
+        parent_b_id: u64,
+        catalog: &SpeciesCatalog,
+        seed: u64,
+    ) -> Result<BreedingResult, WorldError> {
+        let parent_a = self
+            .creatures
+            .get(&parent_a_id)
+            .ok_or(WorldError::CreatureNotFound(parent_a_id))?;
+        let parent_b = self
+            .creatures
+            .get(&parent_b_id)
+            .ok_or(WorldError::CreatureNotFound(parent_b_id))?;
+
+        let species_a = catalog.get(&parent_a.species_id).ok_or_else(|| {
+            WorldError::SpeciesNotFound(parent_a.species_id.clone())
+        })?;
+        let species_b = catalog.get(&parent_b.species_id).ok_or_else(|| {
+            WorldError::SpeciesNotFound(parent_b.species_id.clone())
+        })?;
+
+        let engine = BreedingEngine::new();
+        let result = engine.breed(parent_a, species_a, parent_b, species_b, catalog, seed)?;
+
+        let offspring_species = catalog
+            .get(&result.offspring_species_id)
+            .ok_or_else(|| WorldError::SpeciesNotFound(result.offspring_species_id.clone()))?;
+
+        // Deposita o ovo automaticamente no ninho de incubação
+        self.deposit_egg(offspring_species)?;
+
+        Ok(result)
+    }
+
     /// Choca um ovo pronto, registra no Bestiário e aloca no habitat de destino.
     pub fn hatch_egg(
         &mut self,
@@ -397,5 +445,48 @@ mod tests {
         assert_eq!(loaded_world.creatures.len(), world.creatures.len());
         assert_eq!(loaded_world.gold, world.gold);
         assert_eq!(loaded_world.food, world.food);
+    }
+
+    #[test]
+    fn test_world_breeding_lifecycle() {
+        let species_catalog = SpeciesCatalog::with_starter_species();
+        let hab_catalog = HabitatCatalog::with_default_habitats();
+
+        let mut world = SanctuaryWorld::with_starter_setup(
+            "Criador Lendário",
+            &species_catalog,
+            &hab_catalog,
+        ).expect("Starter setup should succeed");
+
+        // Adiciona segunda criatura adulta: Golem Rochoso (Terra)
+        let earth_creature_id = world.next_id();
+        let mut earth_creature = CreatureInstance::new(earth_creature_id, "stone_golem");
+        earth_creature.level = 4;
+        earth_creature.stage = crate::creature::GrowthStage::from_level(4);
+        world.creatures.insert(earth_creature_id, earth_creature);
+
+        // Promove primeira criatura a adulta (Salamandra Ígnea inicial)
+        let fire_creature_id = world
+            .creatures
+            .keys()
+            .find(|&&id| id != earth_creature_id)
+            .copied()
+            .unwrap();
+        let fire_creature = world.creatures.get_mut(&fire_creature_id).unwrap();
+        fire_creature.level = 4;
+        fire_creature.stage = crate::creature::GrowthStage::from_level(4);
+
+        // Executa cruzamento Fogo + Terra
+        let res = world.breed_creatures(
+            fire_creature_id,
+            earth_creature_id,
+            &species_catalog,
+            12345,
+        ).expect("Breeding should succeed");
+
+        assert_eq!(res.parent_a_id, fire_creature_id);
+        assert_eq!(res.parent_b_id, earth_creature_id);
+        assert_eq!(world.hatchery.eggs.len(), 1);
+        assert!(!res.offspring_species_id.is_empty());
     }
 }

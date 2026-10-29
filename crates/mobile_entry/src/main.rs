@@ -3,8 +3,8 @@
 
 use engine::{
     App, BitmapFont, Camera2D, Color, EngineConfig, GameState, InputManager,
-    IsometricProjection, MouseButton, Rect, RenderQueue, RgbaImage, SpriteBatch, TextureAtlas,
-    TouchPhase,
+    IsometricProjection, MouseButton, Rect, RenderQueue, SpriteBatch,
+    TextureAtlas, TouchPhase, UiAction, UiButton, UiColor, UiManager, UiModal, UiProgressBar,
 };
 use game_core::{
     BattleSession, Combatant, CropCatalog, ElementRegistry, ElementalChart, HabitatCatalog,
@@ -12,19 +12,22 @@ use game_core::{
 };
 
 pub struct BestigardGame {
-    elements: ElementRegistry,
-    catalog: SpeciesCatalog,
-    habitats_catalog: HabitatCatalog,
-    crops_catalog: CropCatalog,
-    milestones_catalog: MilestoneCatalog,
-    elemental_chart: ElementalChart,
-    world: SanctuaryWorld,
+    pub elements: ElementRegistry,
+    pub catalog: SpeciesCatalog,
+    pub habitats_catalog: HabitatCatalog,
+    pub crops_catalog: CropCatalog,
+    pub milestones_catalog: MilestoneCatalog,
+    pub elemental_chart: ElementalChart,
+    pub world: SanctuaryWorld,
     pub atlas: TextureAtlas,
     pub batch: SpriteBatch,
     pub camera: Camera2D,
     pub projection: IsometricProjection,
     pub render_queue: RenderQueue,
     pub font: BitmapFont,
+    pub ui: UiManager,
+    pub selected_creature_id: Option<u64>,
+    pub selected_habitat_id: Option<u64>,
     frames_rendered: u64,
     ticks_processed: u64,
 }
@@ -52,6 +55,24 @@ impl BestigardGame {
         let center_world = projection.grid_to_world(5.0, 5.0);
         camera.set_position(center_world);
 
+        let mut ui = UiManager::new(1080.0, 1920.0);
+        // Botões rápidos do HUD Superior
+        ui.add_global_button(
+            UiButton::new("btn_collect_all", Rect::new(550.0, 24.0, 150.0, 56.0), "COLETAR")
+                .with_colors(UiColor::BTN_PRIMARY, Color::WHITE)
+                .with_scale(1.8),
+        );
+        ui.add_global_button(
+            UiButton::new("btn_open_creature", Rect::new(715.0, 24.0, 160.0, 56.0), "CRIATURA")
+                .with_colors(UiColor::BTN_ACCENT, Color::WHITE)
+                .with_scale(1.8),
+        );
+        ui.add_global_button(
+            UiButton::new("btn_open_breeding", Rect::new(890.0, 24.0, 150.0, 56.0), "CRUZAR")
+                .with_colors(UiColor::GOLD_ACCENT, Color::rgb(0.08, 0.12, 0.22))
+                .with_scale(1.8),
+        );
+
         Self {
             elements: ElementRegistry::with_default_elements(),
             catalog,
@@ -66,9 +87,316 @@ impl BestigardGame {
             projection,
             render_queue: RenderQueue::new(),
             font: BitmapFont::default_font(),
+            ui,
+            selected_creature_id: None,
+            selected_habitat_id: None,
             frames_rendered: 0,
             ticks_processed: 0,
         }
+    }
+
+    /// Abre janela modal de inspeção e gestão de criatura (alimentação, nível e evolução).
+    pub fn open_creature_modal(&mut self, creature_id: u64) {
+        self.selected_creature_id = Some(creature_id);
+        let creature = match self.world.creatures.get(&creature_id) {
+            Some(c) => c.clone(),
+            None => return,
+        };
+        let species = match self.catalog.get(&creature.species_id) {
+            Some(s) => s.clone(),
+            None => return,
+        };
+
+        let mut modal = UiModal::new(
+            "modal_creature",
+            "GESTAO DE CRIATURA",
+            Rect::new(140.0, 280.0, 800.0, 680.0),
+        );
+
+        let nick = creature.nickname.as_deref().unwrap_or(&species.name);
+        modal.add_text(
+            format!("ESPECIE: {} ('{}')", species.name.to_uppercase(), nick.to_uppercase()),
+            170.0,
+            350.0,
+            1.8,
+            Color::WHITE,
+        );
+
+        let el_str = species
+            .elements
+            .iter()
+            .map(|e| e.as_str().to_uppercase())
+            .collect::<Vec<_>>()
+            .join(" / ");
+        modal.add_text(
+            format!("ELEMENTOS: [{}] | RARIDADE: {:?}", el_str, species.rarity),
+            170.0,
+            390.0,
+            1.6,
+            Color::rgb(0.95, 0.82, 0.35),
+        );
+
+        modal.add_text(
+            format!("ESTAGIO: {:?} | NIVEL ATUAL: {}", creature.stage, creature.level),
+            170.0,
+            430.0,
+            1.8,
+            Color::rgb(0.35, 0.90, 0.90),
+        );
+
+        modal.add_text(
+            format!(
+                "XP ACUMULADO: {} / {} PARA PROXIMO NIVEL",
+                creature.xp,
+                creature.xp_for_next_level()
+            ),
+            170.0,
+            470.0,
+            1.5,
+            Color::WHITE,
+        );
+
+        // Barra de progresso de experiência (XP)
+        let ratio = (creature.xp as f32 / creature.xp_for_next_level().max(1) as f32).clamp(0.0, 1.0);
+        modal.add_progress_bar(UiProgressBar::new(
+            Rect::new(170.0, 500.0, 740.0, 24.0),
+            ratio,
+            UiColor::XP_FILL,
+        ));
+
+        let gold_hr = creature.calculate_gold_per_hour(&species);
+        modal.add_text(
+            format!("PRODUCAO PASSIVA: {} OURO/HORA", gold_hr),
+            170.0,
+            545.0,
+            1.6,
+            Color::rgb(1.0, 0.85, 0.2),
+        );
+
+        modal.add_text(
+            format!("COMIDA EM ESTOQUE NO SANTUARIO: {}", self.world.food),
+            170.0,
+            580.0,
+            1.6,
+            Color::rgb(0.4, 0.9, 0.3),
+        );
+
+        // Custo dinâmico de alimentação: 20 * level
+        let feed_cost = 20 * creature.level as u64;
+        let can_feed = self.world.food >= feed_cost;
+
+        let feed_btn = UiButton::new(
+            "btn_feed_action",
+            Rect::new(190.0, 640.0, 700.0, 68.0),
+            format!("ALIMENTAR CRIATURA (-{} COMIDA)", feed_cost),
+        )
+        .with_colors(
+            if can_feed { UiColor::BTN_PRIMARY } else { UiColor::BTN_DISABLED },
+            Color::WHITE,
+        )
+        .with_disabled(!can_feed)
+        .with_scale(1.9);
+
+        modal.add_button(feed_btn);
+
+        // Dica de evolução
+        let evo_msg = if creature.level < 4 {
+            "Evolui para Jovem no Nivel 4 (Pronto para Cruzamento)"
+        } else if creature.level < 10 {
+            "Evolui para Adulto Titanico no Nivel 10 (Pico de Poder)"
+        } else {
+            "Estagio Maximo de Adulto Atingido!"
+        };
+        modal.add_text(evo_msg, 190.0, 730.0, 1.5, UiColor::GOLD_ACCENT);
+
+        self.ui.open_modal(modal);
+    }
+
+    /// Abre janela modal para seleção de progenitores e início do cruzamento determinístico.
+    pub fn open_breeding_modal(&mut self) {
+        let mut modal = UiModal::new(
+            "modal_breeding",
+            "ALTAR DE CRUZAMENTO GENETICO",
+            Rect::new(140.0, 280.0, 800.0, 680.0),
+        );
+
+        // Identifica criaturas adultas/jovens elegíveis para cruzar (nível >= 4)
+        let eligible: Vec<u64> = self
+            .world
+            .creatures
+            .iter()
+            .filter(|(_, c)| c.can_breed())
+            .map(|(&id, _)| id)
+            .collect();
+
+        modal.add_text(
+            "SELECAO DE PAIS PARA COMBINACAO DE ELEMENTOS",
+            170.0,
+            350.0,
+            1.8,
+            Color::WHITE,
+        );
+
+        if eligible.len() >= 2 {
+            let p1 = &self.world.creatures[&eligible[0]];
+            let p2 = &self.world.creatures[&eligible[1]];
+            let s1 = self.catalog.get(&p1.species_id).unwrap();
+            let s2 = self.catalog.get(&p2.species_id).unwrap();
+
+            modal.add_text(
+                format!("PAI 1: {} (NIVEL {})", s1.name.to_uppercase(), p1.level),
+                170.0,
+                400.0,
+                1.7,
+                Color::rgb(1.0, 0.65, 0.35),
+            );
+            modal.add_text(
+                format!("PAI 2: {} (NIVEL {})", s2.name.to_uppercase(), p2.level),
+                170.0,
+                440.0,
+                1.7,
+                Color::rgb(0.55, 0.85, 1.0),
+            );
+
+            modal.add_text(
+                "PREVISAO GENETICA: HIBRIDO ELEMENTAL COMPATIVEL",
+                170.0,
+                490.0,
+                1.6,
+                UiColor::GOLD_ACCENT,
+            );
+            modal.add_text(
+                "Chance aumentada de mutacao rara pelo nivel dos progenitores!",
+                170.0,
+                525.0,
+                1.5,
+                Color::WHITE,
+            );
+
+            let breed_btn = UiButton::new(
+                "btn_breed_action",
+                Rect::new(190.0, 620.0, 700.0, 68.0),
+                "INICIAR CRUZAMENTO (GERAR OVO NO NINHO)",
+            )
+            .with_colors(UiColor::BTN_PRIMARY, Color::WHITE)
+            .with_scale(1.8);
+            modal.add_button(breed_btn);
+        } else {
+            modal.add_text(
+                "CRIATURAS ADULTAS INSUFICIENTES (MINIMO: 2 NIVEL 4+)",
+                170.0,
+                410.0,
+                1.6,
+                UiColor::BTN_DANGER,
+            );
+            modal.add_text(
+                "Dica: Alimente suas criaturas ate o Nivel 4 (Juvenil) para liberá-las!",
+                170.0,
+                460.0,
+                1.5,
+                Color::WHITE,
+            );
+            modal.add_text(
+                format!(
+                    "Criaturas prontas: {} / 2 requeridas.",
+                    eligible.len()
+                ),
+                170.0,
+                500.0,
+                1.6,
+                UiColor::GOLD_ACCENT,
+            );
+        }
+
+        self.ui.open_modal(modal);
+    }
+
+    /// Abre janela modal de inspeção e coleta de ouro do habitat selecionado.
+    pub fn open_habitat_modal(&mut self, habitat_id: u64) {
+        self.selected_habitat_id = Some(habitat_id);
+        let hab = match self.world.habitats.get(&habitat_id) {
+            Some(h) => h.clone(),
+            None => return,
+        };
+        let hab_type = match self.habitats_catalog.get(&hab.type_id) {
+            Some(t) => t.clone(),
+            None => return,
+        };
+        let tier_info = hab_type.get_tier_info(hab.tier);
+        let gold_cap = tier_info.map(|t| t.gold_capacity).unwrap_or(500);
+        let max_creatures = tier_info.map(|t| t.max_creatures).unwrap_or(2);
+
+        let mut modal = UiModal::new(
+            "modal_habitat",
+            "GESTAO DE HABITAT",
+            Rect::new(140.0, 280.0, 800.0, 600.0),
+        );
+
+        modal.add_text(
+            format!("TIPO: {} (TIER {})", hab_type.name.to_uppercase(), hab.tier),
+            170.0,
+            350.0,
+            1.8,
+            Color::WHITE,
+        );
+        let elements_str = hab_type
+            .supported_elements
+            .iter()
+            .map(|e| e.as_str().to_uppercase())
+            .collect::<Vec<_>>()
+            .join(" / ");
+        modal.add_text(
+            format!("ELEMENTOS: [{}]", elements_str),
+            170.0,
+            390.0,
+            1.6,
+            Color::rgb(1.0, 0.75, 0.35),
+        );
+        modal.add_text(
+            format!(
+                "OCUPACAO: {} / {} CRIATURAS",
+                hab.creature_ids.len(),
+                max_creatures
+            ),
+            170.0,
+            430.0,
+            1.6,
+            Color::WHITE,
+        );
+        modal.add_text(
+            format!(
+                "OURO ACUMULADO: {} / {} LIMITE",
+                hab.accumulated_gold, gold_cap
+            ),
+            170.0,
+            470.0,
+            1.7,
+            Color::rgb(1.0, 0.85, 0.2),
+        );
+
+        // Barra de acúmulo de ouro
+        let ratio = (hab.accumulated_gold as f32 / gold_cap as f32).clamp(0.0, 1.0);
+        modal.add_progress_bar(UiProgressBar::new(
+            Rect::new(170.0, 500.0, 740.0, 24.0),
+            ratio,
+            UiColor::GOLD_FILL,
+        ));
+
+        let has_gold = hab.accumulated_gold > 0;
+        let collect_btn = UiButton::new(
+            "btn_collect_hab_action",
+            Rect::new(190.0, 560.0, 700.0, 68.0),
+            format!("COLETAR +{} DE OURO", hab.accumulated_gold),
+        )
+        .with_colors(
+            if has_gold { UiColor::BTN_PRIMARY } else { UiColor::BTN_DISABLED },
+            Color::WHITE,
+        )
+        .with_disabled(!has_gold)
+        .with_scale(1.9);
+        modal.add_button(collect_btn);
+
+        self.ui.open_modal(modal);
     }
 }
 
@@ -88,7 +416,6 @@ impl GameState for BestigardGame {
             self.world.gold,
             self.world.food
         );
-
 
         // 1. Constrói Fazenda de Comida em (6, 2) e planta Fruta Silvestre
         let farm_id = self.world.build_farm(6, 2, 50).expect("Farm building should succeed");
@@ -193,35 +520,43 @@ impl GameState for BestigardGame {
             );
         }
 
-        // 4. Camada de Interface de Usuário (Ui): HUD fixo e contadores
+        // 4. Camada de Interface de Usuário (Ui): HUD Superior fixo de recursos
+        // Barra de vidro fosco do HUD
         self.render_queue.push_ui_rect(
-            Rect::new(20.0, 20.0, 1040.0, 80.0),
-            Color::rgba(0.08, 0.12, 0.22, 0.9),
+            Rect::new(20.0, 16.0, 1040.0, 72.0),
+            UiColor::DARK_GLASS,
         );
+        // Friso decorativo inferior dourado
+        self.render_queue.push_ui_rect(
+            Rect::new(20.0, 88.0, 1040.0, 2.0),
+            UiColor::GOLD_ACCENT,
+        );
+
+        // Ícones de recursos no HUD
         if let Some(gold) = self.atlas.get("icon_gold_coin") {
-            self.render_queue.push_ui(gold.clone(), Rect::new(40.0, 36.0, 48.0, 48.0), Color::WHITE);
+            self.render_queue.push_ui(gold.clone(), Rect::new(32.0, 28.0, 48.0, 48.0), Color::WHITE);
         }
         if let Some(food) = self.atlas.get("icon_food_apple") {
-            self.render_queue.push_ui(food.clone(), Rect::new(260.0, 36.0, 48.0, 48.0), Color::WHITE);
+            self.render_queue.push_ui(food.clone(), Rect::new(280.0, 28.0, 48.0, 48.0), Color::WHITE);
         }
 
         // Flush com ordenação de profundidade automática (Y-Sort) diretamente no SpriteBatch
         self.render_queue.flush_to_batch(&mut self.batch);
 
-        // 5. Renderização de Texto com BitmapFont
+        // 5. Renderização dos Textos do HUD Superior com BitmapFont
         self.font.draw_text(
             &mut self.batch,
             &format!("OURO: {}", self.world.gold),
-            95.0,
-            48.0,
+            88.0,
+            42.0,
             2.0,
-            Color::rgb(1.0, 0.85, 0.2),
+            UiColor::GOLD_FILL,
         );
         self.font.draw_text(
             &mut self.batch,
             &format!("COMIDA: {}", self.world.food),
-            315.0,
-            48.0,
+            336.0,
+            42.0,
             2.0,
             Color::rgb(0.4, 0.9, 0.3),
         );
@@ -229,10 +564,13 @@ impl GameState for BestigardGame {
             &mut self.batch,
             "BESTIGARD SANCTUARY",
             40.0,
-            110.0,
+            104.0,
             1.8,
             Color::WHITE,
         );
+
+        // 6. Renderização da Interface e Modais via UiManager
+        self.ui.render(&mut self.render_queue, &mut self.batch, &self.font);
     }
 
     fn on_resume(&mut self) {
@@ -240,13 +578,105 @@ impl GameState for BestigardGame {
     }
 
     fn on_input(&mut self, input: &InputManager) {
-        input.apply_to_camera(&mut self.camera);
+        let mut handled_tap = false;
+
         for tap in input.taps() {
-            let cell = self.camera.screen_to_grid_cell(tap.x, tap.y, &self.projection);
-            println!(
-                "Entrada Unificada: Tap capturado em ({:.0}, {:.0}) -> Célula da ilha selecionada: ({}, {})",
-                tap.x, tap.y, cell.0, cell.1
-            );
+            let action = self.ui.handle_tap(tap);
+            match action {
+                UiAction::ButtonClicked(ref id) => {
+                    handled_tap = true;
+                    match id.as_str() {
+                        "btn_collect_all" => {
+                            let total = self.world.collect_all_gold();
+                            println!("UI: Coletado ouro de todos os habitats: +{} ouro!", total);
+                        }
+                        "btn_open_creature" => {
+                            if let Some(&first_id) = self.world.creatures.keys().next() {
+                                self.open_creature_modal(first_id);
+                            }
+                        }
+                        "btn_open_breeding" => {
+                            self.open_breeding_modal();
+                        }
+                        "btn_feed_action" => {
+                            if let Some(cid) = self.selected_creature_id {
+                                match self.world.feed_creature(cid) {
+                                    Ok(res) => {
+                                        println!(
+                                            "UI: Criatura #{} alimentada! Novo nivel: {}, Estagio: {:?}",
+                                            cid, res.new_level, res.new_stage
+                                        );
+                                        // Atualiza o modal com as informações renovadas
+                                        self.open_creature_modal(cid);
+                                    }
+                                    Err(e) => println!("UI: Falha ao alimentar criatura: {}", e),
+                                }
+                            }
+                        }
+                        "btn_breed_action" => {
+                            let eligible: Vec<u64> = self
+                                .world
+                                .creatures
+                                .iter()
+                                .filter(|(_, c)| c.can_breed())
+                                .map(|(&id, _)| id)
+                                .collect();
+                            if eligible.len() >= 2 {
+                                match self.world.breed_creatures(eligible[0], eligible[1], &self.catalog, 9999) {
+                                    Ok(res) => {
+                                        println!(
+                                            "UI: Cruzamento bem sucedido! Ovo da especie '{}' depositado no ninho!",
+                                            res.offspring_species_id
+                                        );
+                                        self.ui.close_modal();
+                                    }
+                                    Err(e) => println!("UI: Erro no cruzamento: {}", e),
+                                }
+                            }
+                        }
+                        "btn_collect_hab_action" => {
+                            if let Some(hid) = self.selected_habitat_id {
+                                match self.world.collect_habitat_gold(hid) {
+                                    Ok(gold) => {
+                                        println!("UI: Coletado +{} ouro do Habitat #{}!", gold, hid);
+                                        self.open_habitat_modal(hid);
+                                    }
+                                    Err(e) => println!("UI: Erro na coleta do habitat: {}", e),
+                                }
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+                UiAction::ModalClosed => {
+                    handled_tap = true;
+                    println!("UI: Modal fechado pelo usuário.");
+                }
+                UiAction::None => {}
+            }
+
+            if !handled_tap && !self.ui.is_modal_open() {
+                let cell = self.camera.screen_to_grid_cell(tap.x, tap.y, &self.projection);
+                println!(
+                    "Entrada Unificada: Tap capturado em ({:.0}, {:.0}) -> Célula da ilha selecionada: ({}, {})",
+                    tap.x, tap.y, cell.0, cell.1
+                );
+
+                // Se tocou sobre o habitat (células 2..5 x 2..5), abre modal do habitat
+                if let Some((&hab_id, _)) = self.world.habitats.iter().find(|(_, h)| {
+                    let hx = h.grid_x as i32;
+                    let hy = h.grid_y as i32;
+                    cell.0 >= hx && cell.0 < hx + 3 && cell.1 >= hy && cell.1 < hy + 3
+                }) {
+                    println!("UI: Selecionado Habitat #{} no mapa -> Abrindo menu de gestão", hab_id);
+                    self.open_habitat_modal(hab_id);
+                }
+            }
+        }
+
+        // Se nenhum modal estiver aberto, gestos de pan e pinch movem a câmera normalmente
+        if !self.ui.is_modal_open() {
+            input.apply_to_camera(&mut self.camera);
         }
     }
 }
@@ -334,74 +764,7 @@ fn main() {
     }
     println!("Resultado da Arena: {:?}", battle.outcome);
 
-    // 7. Demonstração do Pipeline de Renderização em Lote (Sprite Batcher)
-    println!("\n--- PIPELINE 2D SPRITE BATCHER & ATLAS ---");
-    let batch_stats = state.batch.stats();
-    println!(
-        "Atlas '{}': {} sprites mapeados (Resolução: {}x{} px).",
-        state.atlas.name,
-        state.atlas.len(),
-        state.atlas.width,
-        state.atlas.height
-    );
-    println!(
-        "Lote consolidado: {} quads, {} vértices e {} índices agrupados para renderização.",
-        batch_stats.quads,
-        batch_stats.vertices,
-        batch_stats.indices
-    );
-
-    // 8. Demonstração de Controles de Câmera e Raycasting Isométrico
-    println!("\n--- CÂMERA 2D & PROJEÇÃO ISOMÉTRICA ---");
-    let touch_screen = (540.0, 960.0); // Toque no centro da tela mobile
-    let world_picked = state.camera.screen_to_world(touch_screen.0, touch_screen.1);
-    let cell_picked = state.camera.screen_to_grid_cell(
-        touch_screen.0,
-        touch_screen.1,
-        &state.projection,
-    );
-
-    println!(
-        "Toque na tela em ({:.0}, {:.0}) -> Mundo: ({:.1}, {:.1}) -> Célula da Ilha: ({}, {})",
-        touch_screen.0, touch_screen.1, world_picked.x, world_picked.y, cell_picked.0, cell_picked.1
-    );
-
-    // Simulação de gesto de pinça (zoom in 1.35x centrado no toque) e arrasto (pan)
-    state.camera.zoom_at(1.35, touch_screen.0, touch_screen.1);
-    state.camera.pan(-80.0, -40.0);
-
-    println!(
-        "Após Pan e Zoom: Câmera Pos: ({:.1}, {:.1}), Zoom: {:.2}x, Limites Visíveis: {:?}",
-        state.camera.position.x,
-        state.camera.position.y,
-        state.camera.zoom,
-        state.camera.visible_world_bounds()
-    );
-
-    // 9. Demonstração de Ordenação de Profundidade Isométrica (Y-Sorting)
-    println!("\n--- ORDENAÇÃO DE PROFUNDIDADE (Y-SORTING) & CAMADAS ---");
-    println!("RenderQueue com 4 camadas ativas: Ground -> GroundDecal -> Entities (Y-Sorted) -> Ui");
-    println!("Criatura Vulcânica (Grid 2.5, 2.5) renderizada ATRÁS do Habitat (Grid 3.0, 3.0).");
-    println!("Criatura Pírica (Grid 3.5, 3.5) renderizada NA FRENTE do Habitat (Grid 3.0, 3.0).");
-
-    // 10. Demonstração de Carregamento de Texturas & Renderização de Texto
-    println!("\n--- CARREGAMENTO DE TEXTURAS & FONTES BITMAP ---");
-    let (atlas_img, from_disk) =
-        RgbaImage::load_or_fallback("assets/sprites/creatures_atlas.png", 512, 512);
-    println!(
-        "Carregador de Textura: 'assets/sprites/creatures_atlas.png' -> {} (Resolução: {}x{} px).",
-        if from_disk { "Carregado do disco com sucesso" } else { "PNG ausente -> Gerado fallback procedural automático (Pronto para substituição imediata)" },
-        atlas_img.width,
-        atlas_img.height
-    );
-
-    let (label_w, label_h) = state.font.measure_text("OURO: 620", 2.0);
-    println!(
-        "Renderizador de Texto: Rótulo 'OURO: 620' medido em {:.0}x{:.0} px (ASCII 5x7 embutido com suporte a cores).",
-        label_w, label_h
-    );
-
-    // 11. Demonstração de Entradas Unificadas Mobile/Desktop (Tap, Drag, Pinch-to-Zoom)
+    // 7. Demonstração de Entradas Unificadas Mobile/Desktop (Tap, Drag, Pinch-to-Zoom)
     println!("\n--- SISTEMA UNIFICADO DE ENTRADA & GESTOS (INPUT) ---");
     let mut test_input = InputManager::new();
 
@@ -430,14 +793,82 @@ fn main() {
     );
     test_input.clear_events();
 
-    // C) Simula clique e arraste com mouse desktop (Pan)
-    test_input.on_mouse_button_down(MouseButton::Left, 500.0, 500.0);
-    test_input.on_mouse_motion(450.0, 480.0);
-    test_input.on_mouse_button_up(MouseButton::Left, 450.0, 480.0);
-    state.on_input(&test_input);
+    // 8. Demonstração Interativa da Interface de Usuário (HUD e Menus Modais)
+    println!("\n--- INTERFACE DE USUÁRIO (HUD & MENUS MODAIS) ---");
 
-    println!(
-        "Mouse Desktop: Arraste de tela processado com sucesso. Posição da Câmera: ({:.1}, {:.1})",
-        state.camera.position.x, state.camera.position.y
-    );
+    // A) Toque no botão global do HUD: [COLETAR]
+    println!("1. Testando toque no botão de HUD [COLETAR OURO] (pos: 600, 40)...");
+    let mut hud_input = InputManager::new();
+    hud_input.on_mouse_button_down(MouseButton::Left, 600.0, 40.0);
+    hud_input.on_mouse_button_up(MouseButton::Left, 600.0, 40.0);
+    state.on_input(&hud_input);
+    hud_input.clear_events();
+
+    // B) Toque no botão global do HUD: [CRIATURA] para abrir modal de inspeção
+    println!("\n2. Abrindo diálogo modal de Gestão da Criatura Ignis [CRIATURA] (pos: 750, 40)...");
+    hud_input.on_mouse_button_down(MouseButton::Left, 750.0, 40.0);
+    hud_input.on_mouse_button_up(MouseButton::Left, 750.0, 40.0);
+    state.on_input(&hud_input);
+    hud_input.clear_events();
+    assert!(state.ui.is_modal_open());
+    println!("Modal ativo: '{}'", state.ui.active_modal.as_ref().unwrap().title);
+
+    // C) Toque no botão interno do modal: [ALIMENTAR CRIATURA]
+    println!("\n3. Alimentando criatura através do botão interno do modal (pos: 400, 670)...");
+    hud_input.on_mouse_button_down(MouseButton::Left, 400.0, 670.0);
+    hud_input.on_mouse_button_up(MouseButton::Left, 400.0, 670.0);
+    state.on_input(&hud_input);
+    hud_input.clear_events();
+    assert!(state.ui.is_modal_open());
+
+    // D) Fechar modal pelo botão de fechar (X)
+    let close_x = state.ui.active_modal.as_ref().unwrap().close_button.rect.x + 10.0;
+    let close_y = state.ui.active_modal.as_ref().unwrap().close_button.rect.y + 10.0;
+    println!("\n4. Fechando modal via botão de fechar (X) (pos: {:.0}, {:.0})...", close_x, close_y);
+    hud_input.on_mouse_button_down(MouseButton::Left, close_x, close_y);
+    hud_input.on_mouse_button_up(MouseButton::Left, close_x, close_y);
+    state.on_input(&hud_input);
+    hud_input.clear_events();
+    assert!(!state.ui.is_modal_open());
+
+    // E) Promover criaturas a Nível 4 e testar Altar de Cruzamento
+    println!("\n5. Promovendo Ignis e Besta Vulcânica para Nível 4 (Juvenil) para habilitar cruzamento...");
+    for creature in state.world.creatures.values_mut() {
+        creature.level = 4;
+        creature.stage = game_core::GrowthStage::from_level(4);
+    }
+
+    println!("Abrindo modal do [CRUZAMENTO] (pos: 920, 40)...");
+    hud_input.on_mouse_button_down(MouseButton::Left, 920.0, 40.0);
+    hud_input.on_mouse_button_up(MouseButton::Left, 920.0, 40.0);
+    state.on_input(&hud_input);
+    hud_input.clear_events();
+    assert!(state.ui.is_modal_open());
+    println!("Modal ativo: '{}'", state.ui.active_modal.as_ref().unwrap().title);
+
+    println!("\n6. Executando cruzamento pelo botão [INICIAR CRUZAMENTO] (pos: 400, 650)...");
+    let initial_eggs = state.world.hatchery.eggs.len();
+    hud_input.on_mouse_button_down(MouseButton::Left, 400.0, 650.0);
+    hud_input.on_mouse_button_up(MouseButton::Left, 400.0, 650.0);
+    state.on_input(&hud_input);
+    hud_input.clear_events();
+    assert_eq!(state.world.hatchery.eggs.len(), initial_eggs + 1);
+    println!("Ninho de Incubação: {} ovo(s) em processo de choca!", state.world.hatchery.eggs.len());
+
+    // F) Simular geração de ouro e abrir modal do Habitat #10 para coletar
+    println!("\n7. Simulando acumulo de ouro e abrindo modal do Habitat #{}...", starter_hab_id);
+    state.world.habitats.get_mut(&starter_hab_id).unwrap().accumulated_gold = 150;
+    state.open_habitat_modal(starter_hab_id);
+    assert!(state.ui.is_modal_open());
+
+    println!("Coletando ouro acumulado pelo botão do modal (pos: 400, 590)...");
+    hud_input.on_mouse_button_down(MouseButton::Left, 400.0, 590.0);
+    hud_input.on_mouse_button_up(MouseButton::Left, 400.0, 590.0);
+    state.on_input(&hud_input);
+    hud_input.clear_events();
+
+    state.ui.close_modal();
+    assert!(!state.ui.is_modal_open());
+
+    println!("\n>> Interface de Usuário (HUD e Menus Modais) validada com 100% de sucesso! <<");
 }
