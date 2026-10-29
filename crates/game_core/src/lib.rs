@@ -3,11 +3,13 @@
 
 pub mod bestiary;
 pub mod breeding;
+pub mod combat;
 pub mod creature;
 pub mod element;
 pub mod farming;
 pub mod habitat;
 pub mod incubation;
+pub mod world;
 
 pub use bestiary::{
     Bestiary, BestiaryError, CollectionMilestone, DiscoveredEntry, MilestoneCatalog,
@@ -15,6 +17,10 @@ pub use bestiary::{
 };
 pub use breeding::{
     BreedingEngine, BreedingError, BreedingResult, DeterministicRng,
+};
+pub use combat::{
+    BattleOutcome, BattleSession, CombatActionLog, CombatSkill, Combatant, Effectiveness,
+    ElementalChart,
 };
 pub use creature::{
     CreatureInstance, CreatureSpecies, GrowthStage, Rarity, SpeciesCatalog,
@@ -30,6 +36,7 @@ pub use habitat::{
 pub use incubation::{
     EggInstance, HatcheryError, HatcheryInstance, IncubationSpeedModifier, ModifierSource,
 };
+pub use world::{SanctuaryWorld, WorldError};
 
 /// Retorna a versão da crate de regras centrais.
 pub fn core_version() -> &'static str {

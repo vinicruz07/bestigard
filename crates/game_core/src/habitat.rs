@@ -216,8 +216,8 @@ impl HabitatInstance {
 pub struct IslandGrid {
     pub width: u32,
     pub height: u32,
-    /// Mapa de células ocupadas (coordenada (x, y) -> ID da instância do habitat)
-    occupied_cells: HashMap<(u32, u32), u64>,
+    /// Mapa de células ocupadas ("x:y" -> ID da instância do habitat)
+    occupied_cells: HashMap<String, u64>,
 }
 
 impl IslandGrid {
@@ -227,6 +227,11 @@ impl IslandGrid {
             height,
             occupied_cells: HashMap::new(),
         }
+    }
+
+    #[inline]
+    pub fn cell_key(x: u32, y: u32) -> String {
+        format!("{}:{}", x, y)
     }
 
     /// Verifica se uma área retangular está dentro dos limites da ilha e totalmente livre.
@@ -247,7 +252,7 @@ impl IslandGrid {
 
         for x in origin_x..origin_x + w {
             for y in origin_y..origin_y + h {
-                if let Some(&occupier) = self.occupied_cells.get(&(x, y)) {
+                if let Some(&occupier) = self.occupied_cells.get(&Self::cell_key(x, y)) {
                     if Some(occupier) != ignore_habitat_id {
                         return Err(HabitatError::TileOccupied { x, y });
                     }
@@ -268,7 +273,7 @@ impl IslandGrid {
 
         for x in habitat.grid_x..habitat.grid_x + hab_type.width {
             for y in habitat.grid_y..habitat.grid_y + hab_type.height {
-                self.occupied_cells.insert((x, y), habitat.instance_id);
+                self.occupied_cells.insert(Self::cell_key(x, y), habitat.instance_id);
             }
         }
 
@@ -279,8 +284,9 @@ impl IslandGrid {
     pub fn remove_habitat(&mut self, habitat: &HabitatInstance, hab_type: &HabitatType) {
         for x in habitat.grid_x..habitat.grid_x + hab_type.width {
             for y in habitat.grid_y..habitat.grid_y + hab_type.height {
-                if self.occupied_cells.get(&(x, y)) == Some(&habitat.instance_id) {
-                    self.occupied_cells.remove(&(x, y));
+                let key = Self::cell_key(x, y);
+                if self.occupied_cells.get(&key) == Some(&habitat.instance_id) {
+                    self.occupied_cells.remove(&key);
                 }
             }
         }
@@ -308,9 +314,10 @@ impl IslandGrid {
 
     /// Retorna se uma célula específica está ocupada.
     pub fn is_occupied(&self, x: u32, y: u32) -> bool {
-        self.occupied_cells.contains_key(&(x, y))
+        self.occupied_cells.contains_key(&Self::cell_key(x, y))
     }
 }
+
 
 /// Catálogo padrão de tipos de habitat para os elementos de Bestigard.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]

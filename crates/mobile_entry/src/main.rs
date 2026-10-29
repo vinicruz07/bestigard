@@ -3,11 +3,9 @@
 
 use engine::{App, EngineConfig, GameState};
 use game_core::{
-    Bestiary, CropCatalog, CreatureInstance, ElementRegistry, FarmInstance, FeedingSystem,
-    HabitatCatalog, HabitatInstance, HatcheryInstance, IncubationSpeedModifier, IslandGrid,
-    MilestoneCatalog, ModifierSource, SpeciesCatalog,
+    BattleSession, Combatant, CropCatalog, ElementRegistry, ElementalChart, HabitatCatalog,
+    IncubationSpeedModifier, MilestoneCatalog, ModifierSource, SanctuaryWorld, SpeciesCatalog,
 };
-use std::collections::HashMap;
 
 pub struct BestigardGame {
     elements: ElementRegistry,
@@ -15,34 +13,28 @@ pub struct BestigardGame {
     habitats_catalog: HabitatCatalog,
     crops_catalog: CropCatalog,
     milestones_catalog: MilestoneCatalog,
-    bestiary: Bestiary,
-    grid: IslandGrid,
-    habitats: Vec<HabitatInstance>,
-    farms: Vec<FarmInstance>,
-    hatchery: HatcheryInstance,
-    creatures: HashMap<u64, CreatureInstance>,
-    player_gold: u64,
-    player_food: u64,
+    elemental_chart: ElementalChart,
+    world: SanctuaryWorld,
     frames_rendered: u64,
     ticks_processed: u64,
 }
 
 impl BestigardGame {
     pub fn new() -> Self {
+        let catalog = SpeciesCatalog::with_starter_species();
+        let habitats_catalog = HabitatCatalog::with_default_habitats();
+
+        let world = SanctuaryWorld::with_starter_setup("Mestre das Bestas", &catalog, &habitats_catalog)
+            .expect("Starter world setup should succeed");
+
         Self {
             elements: ElementRegistry::with_default_elements(),
-            catalog: SpeciesCatalog::with_starter_species(),
-            habitats_catalog: HabitatCatalog::with_default_habitats(),
+            catalog,
+            habitats_catalog,
             crops_catalog: CropCatalog::with_default_crops(),
             milestones_catalog: MilestoneCatalog::with_default_milestones(),
-            bestiary: Bestiary::new(),
-            grid: IslandGrid::new(16, 16),
-            habitats: Vec::new(),
-            farms: Vec::new(),
-            hatchery: HatcheryInstance::new(1, 3), // Ninho com 3 slots
-            creatures: HashMap::new(),
-            player_gold: 500,
-            player_food: 0,
+            elemental_chart: ElementalChart::with_default_affinities(),
+            world,
             frames_rendered: 0,
             ticks_processed: 0,
         }
@@ -58,47 +50,30 @@ impl Default for BestigardGame {
 impl GameState for BestigardGame {
     fn init(&mut self) {
         println!(
-            "BestigardGame inicializado (Core v{}) - {} elementos, {} espécies, {} culturas, {} marcos",
+            "BestigardGame inicializado (Core v{}) - Perfil: '{}' ({} elementos registrados), Saldo: {} ouro, {} comida",
             game_core::core_version(),
+            self.world.player_name,
             self.elements.count(),
-            self.catalog.count(),
-            self.crops_catalog.count(),
-            self.milestones_catalog.count()
+            self.world.gold,
+            self.world.food
         );
 
-        // 1. Constrói o Habitat de Fogo na posição (2, 2)
-        let fire_hab_type = self.habitats_catalog.get("fire_habitat").expect("Fire habitat should exist");
-        let mut habitat = HabitatInstance::new(1, "fire_habitat", 2, 2);
-        self.grid.place_habitat(&habitat, fire_hab_type).expect("Habitat placement should succeed");
 
-        // 2. Aloca a criatura inicial (Salamandra Ígnea) no habitat e registra no Bestiário
-        if let Some(pyro) = self.catalog.get("pyro_salamander") {
-            let mut creature = CreatureInstance::new(1, &pyro.id);
-            creature.nickname = Some("Ignis".to_string());
-            creature.habitat_id = Some(habitat.instance_id);
+        // 1. Constrói Fazenda de Comida em (6, 2) e planta Fruta Silvestre
+        let farm_id = self.world.build_farm(6, 2, 50).expect("Farm building should succeed");
+        let berry = self.crops_catalog.get("wild_berry").expect("Wild berry should exist");
+        self.world.plant_crop(farm_id, berry).expect("Crop planting should succeed");
 
-            habitat.add_creature(&creature, fire_hab_type, &self.catalog).expect("Should add creature to habitat");
-            self.bestiary.record_discovery(&pyro.id, 100);
-            self.creatures.insert(creature.instance_id, creature);
-        }
-        self.habitats.push(habitat);
-
-        // 3. Constrói a Fazenda de Comida na posição (6, 2) e planta Fruta Silvestre
-        let mut farm = FarmInstance::new(100, 6, 2);
-        let berry = self.crops_catalog.get("wild_berry").expect("Wild berry crop should exist");
-        farm.plant_crop(berry, &mut self.player_gold).expect("Crop planting should succeed");
-        self.farms.push(farm);
-
-        // 4. Adiciona um ovo no ninho (Besta Vulcânica - híbrido)
+        // 2. Deposita ovo de Besta Vulcânica no ninho
         if let Some(volcano) = self.catalog.get("volcano_beast") {
-            let egg_id = self.hatchery.add_egg(volcano).expect("Egg addition should succeed");
+            let egg_id = self.world.deposit_egg(volcano).expect("Egg deposit should succeed");
             println!(
-                "Ninho: Ovo #{} de '{}' depositado (duração base: {}s)",
-                egg_id, volcano.name, volcano.incubation_time_secs
+                "Ninho: Ovo #{} de '{}' depositado.",
+                egg_id, volcano.name
             );
 
-            // Equipa modificador genérico de velocidade (2.5x de velocidade)
-            self.hatchery.add_modifier(IncubationSpeedModifier::permanent(
+            // Equipa modificador de velocidade no ninho
+            self.world.hatchery.add_modifier(IncubationSpeedModifier::permanent(
                 "primal_heat_amulet",
                 "Amuleto do Calor Primordial",
                 ModifierSource::Amulet("primal_heat_amulet".to_string()),
@@ -110,23 +85,16 @@ impl GameState for BestigardGame {
     fn fixed_update(&mut self, fixed_dt: f32) {
         self.ticks_processed += 1;
 
-        // Atualiza a produção de ouro dos habitats
-        let fire_type = self.habitats_catalog.get("fire_habitat").unwrap();
-        for hab in &mut self.habitats {
-            hab.generate_gold(fixed_dt as f64 * 60.0, &self.creatures, &self.catalog, fire_type);
-        }
-
-        // Atualiza o crescimento das fazendas
-        for farm in &mut self.farms {
-            farm.update_growth(fixed_dt as f64 * 30.0);
-        }
-
-        // Atualiza o progresso da incubadora de ovos
-        self.hatchery.update_incubation(fixed_dt as f64 * 30.0);
+        // Avança simulação centralizada do mundo inteiro
+        self.world.tick(
+            fixed_dt as f64 * 30.0,
+            &self.catalog,
+            &self.habitats_catalog,
+        );
     }
 
     fn update(&mut self, _dt: f32) {
-        // Atualizações visuais de apresentação
+        // Animações e apresentação
     }
 
     fn render(&mut self, _alpha: f32) {
@@ -151,75 +119,77 @@ fn main() {
 
     let mut app = App::new(config, BestigardGame::default());
 
-    // Executa passos do loop para simular o tempo de fazenda e incubação
+    // Executa passos do loop para simular fazendas e incubação
     for _ in 0..40 {
         app.step(1.0 / 60.0);
     }
 
     let state = app.state_mut();
 
-    // 1. Colheita de comida
-    let harvested_food = state.farms[0].harvest().expect("Harvest should succeed");
-    state.player_food += harvested_food;
-    println!("Colheita concluída: +{} de comida.", harvested_food);
+    // 1. Colheita de comida na fazenda
+    let farm_id = state.world.farms.keys().next().copied().unwrap();
+    let food_harvested = state.world.harvest_farm(farm_id).expect("Harvest should succeed");
+    println!("Colheita concluída: +{} de comida.", food_harvested);
 
-    // 2. Alimentação da Salamandra
-    if let Some(creature) = state.creatures.get_mut(&1) {
-        let feed_res = FeedingSystem::feed_creature(creature, &mut state.player_food).expect("Feeding should succeed");
-        state.bestiary.record_level(&creature.species_id, feed_res.new_level);
-        println!(
-            "Criatura '{}' alimentada. Nível: {}, Estágio: {:?}",
-            creature.nickname.as_deref().unwrap_or(""),
-            feed_res.new_level,
-            feed_res.new_stage
-        );
-    }
-
-    // 3. Eclosão do ovo da Besta Vulcânica
-    let new_creature = state
-        .hatchery
-        .hatch_egg(1, 2, &state.catalog)
-        .expect("Egg should hatch successfully");
-
-    state.bestiary.record_discovery(&new_creature.species_id, 200);
-
+    // 2. Alimenta a criatura inicial (Ignis)
+    let ignis_id = state.world.creatures.keys().next().copied().unwrap();
+    let feed_res = state.world.feed_creature(ignis_id).expect("Feeding should succeed");
     println!(
-        "ECLOSÃO! Nasceu a criatura #{} ('{}') estágio {:?}",
-        new_creature.instance_id,
-        state.catalog.get(&new_creature.species_id).unwrap().name,
-        new_creature.stage
+        "Criatura #{} alimentada. Nível: {}, Estágio: {:?}",
+        ignis_id, feed_res.new_level, feed_res.new_stage
     );
 
-    // Aloca a nova criatura no habitat de Fogo
-    let fire_hab_type = state.habitats_catalog.get("fire_habitat").unwrap();
-    state.habitats[0]
-        .add_creature(&new_creature, fire_hab_type, &state.catalog)
-        .expect("Newborn should enter fire habitat");
-    state.creatures.insert(new_creature.instance_id, new_creature);
+    // 3. Eclosão do ovo da Besta Vulcânica e alocação no Habitat #10
+    let starter_hab_id = state.world.habitats.keys().next().copied().unwrap();
+    let newborn_id = state
+        .world
+        .hatch_egg(1, starter_hab_id, &state.catalog, &state.habitats_catalog)
+        .expect("Egg hatching should succeed");
 
-    // 4. Bestiário e Recompensas de Marcos
-    let completion = state.bestiary.completion_percentage(&state.catalog);
     println!(
-        "Bestiário: {}/{} espécies descobertas ({:.1}% concluído)",
-        state.bestiary.discovered_count(),
-        state.catalog.count(),
-        completion
+        "ECLOSÃO! Criatura #{} nasceu e foi alocada no Habitat #{}.",
+        newborn_id, starter_hab_id
     );
 
-    // Reivindica o marco "Despertar das Bestas" (first_discovery)
-    let reward = state
-        .bestiary
-        .claim_milestone(
-            "first_discovery",
-            &state.milestones_catalog,
-            &state.catalog,
-            &mut state.player_gold,
-            &mut state.player_food,
-        )
+    // 4. Reivindica Marco do Bestiário
+    let _reward = state
+        .world
+        .claim_milestone("first_discovery", &state.milestones_catalog, &state.catalog)
         .expect("Milestone claim should succeed");
 
     println!(
-        "MARCO REIVINDICADO! 'Despertar das Bestas': +{} ouro, +{} comida! Saldo atual: {} ouro, {} comida.",
-        reward.gold, reward.food, state.player_gold, state.player_food
+        "Bestiário: {}/{} espécies ({:.1}% concluído). Ouro total: {}, Comida total: {}",
+        state.world.bestiary.discovered_count(),
+        state.catalog.count(),
+        state.world.bestiary.completion_percentage(&state.catalog),
+        state.world.gold,
+        state.world.food
     );
+
+    // 5. Teste de Serialização de Savegame (JSON)
+    let save_json = state.world.to_json().expect("World serialization should succeed");
+    println!(
+        "Savegame serializado com sucesso! Tamanho do save: {} bytes.",
+        save_json.len()
+    );
+
+    // 6. Duelo na Arena Elemental
+    println!("\n--- DUELO NA ARENA ELEMENTAL ---");
+    let newborn = state.world.creatures.get(&newborn_id).unwrap();
+    let volcano_spec = state.catalog.get(&newborn.species_id).unwrap();
+    let player_fighter = Combatant::from_creature(newborn, volcano_spec);
+
+    let enemy_spec = state.catalog.get("stone_golem").unwrap();
+    let enemy_inst = game_core::CreatureInstance::new(99, &enemy_spec.id);
+    let enemy_fighter = Combatant::from_creature(&enemy_inst, enemy_spec);
+
+    let mut battle = BattleSession::new(vec![player_fighter], vec![enemy_fighter]);
+    let (log1, _) = battle.execute_round(1, &state.elemental_chart);
+    if let Some(l1) = log1 {
+        println!(
+            "  Ataque: {} usou '{}' contra {} (Mult: {:.1}x, Dano: {}, HP restante: {})",
+            l1.attacker_name, l1.skill_name, l1.target_name, l1.elemental_multiplier, l1.raw_damage, l1.target_remaining_hp
+        );
+    }
+    println!("Resultado da Arena: {:?}", battle.outcome);
 }
