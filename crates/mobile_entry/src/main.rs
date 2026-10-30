@@ -58,6 +58,7 @@ pub struct BestigardGame {
     pub selected_creature_id: Option<u64>,
     pub selected_habitat_id: Option<u64>,
     pub selected_obstacle_id: Option<u64>,
+    pub selected_farm_id: Option<u64>,
     pub placement: Option<PlacementSession>,
     pub arena: Option<ArenaSessionState>,
     frames_rendered: u64,
@@ -107,6 +108,7 @@ impl BestigardGame {
             selected_creature_id: None,
             selected_habitat_id: None,
             selected_obstacle_id: None,
+            selected_farm_id: None,
             placement: None,
             arena: None,
             frames_rendered: 0,
@@ -120,29 +122,39 @@ impl BestigardGame {
     fn configure_hud_buttons(&mut self) {
         self.ui.clear_global_buttons();
         self.ui.add_global_button(
-            UiButton::new("btn_collect_all", Rect::new(450.0, 24.0, 112.0, 56.0), "COLETAR")
+            UiButton::new("btn_collect_all", Rect::new(360.0, 24.0, 92.0, 56.0), "COLETAR")
                 .with_colors(UiColor::BTN_PRIMARY, Color::WHITE)
-                .with_scale(1.8),
+                .with_scale(1.6),
         );
         self.ui.add_global_button(
-            UiButton::new("btn_open_creature", Rect::new(570.0, 24.0, 112.0, 56.0), "CRIATURA")
+            UiButton::new("btn_open_creature", Rect::new(458.0, 24.0, 92.0, 56.0), "CRIATURA")
                 .with_colors(UiColor::BTN_ACCENT, Color::WHITE)
-                .with_scale(1.8),
+                .with_scale(1.6),
         );
         self.ui.add_global_button(
-            UiButton::new("btn_open_breeding", Rect::new(690.0, 24.0, 112.0, 56.0), "CRUZAR")
+            UiButton::new("btn_open_breeding", Rect::new(556.0, 24.0, 92.0, 56.0), "CRUZAR")
                 .with_colors(UiColor::GOLD_ACCENT, Color::rgb(0.08, 0.12, 0.22))
-                .with_scale(1.8),
+                .with_scale(1.6),
         );
         self.ui.add_global_button(
-            UiButton::new("btn_open_shop", Rect::new(810.0, 24.0, 112.0, 56.0), "LOJA")
+            UiButton::new("btn_open_hatchery", Rect::new(654.0, 24.0, 92.0, 56.0), "NINHO")
+                .with_colors(Color::rgb(0.85, 0.55, 0.20), Color::WHITE)
+                .with_scale(1.6),
+        );
+        self.ui.add_global_button(
+            UiButton::new("btn_open_bestiary", Rect::new(752.0, 24.0, 92.0, 56.0), "BESTIARIO")
+                .with_colors(Color::rgb(0.40, 0.25, 0.65), Color::WHITE)
+                .with_scale(1.5),
+        );
+        self.ui.add_global_button(
+            UiButton::new("btn_open_shop", Rect::new(850.0, 24.0, 92.0, 56.0), "LOJA")
                 .with_colors(UiColor::BTN_SECONDARY, Color::WHITE)
-                .with_scale(1.8),
+                .with_scale(1.6),
         );
         self.ui.add_global_button(
-            UiButton::new("btn_open_arena", Rect::new(930.0, 24.0, 115.0, 56.0), "ARENA")
+            UiButton::new("btn_open_arena", Rect::new(948.0, 24.0, 95.0, 56.0), "ARENA")
                 .with_colors(UiColor::BTN_DANGER, Color::WHITE)
-                .with_scale(1.8),
+                .with_scale(1.6),
         );
     }
 
@@ -944,6 +956,366 @@ impl BestigardGame {
 
         self.ui.open_modal(modal);
     }
+
+    /// Abre janela modal de gestão da fazenda agrícola (plantio, maturação e colheita).
+    pub fn open_farm_modal(&mut self, farm_id: u64) {
+        self.selected_farm_id = Some(farm_id);
+        let Some(farm) = self.world.farms.get(&farm_id).cloned() else { return };
+
+        let mut modal = UiModal::new(
+            "modal_farm",
+            "GESTAO DE FAZENDA AGRICOLA",
+            Rect::new(140.0, 260.0, 800.0, 720.0),
+        );
+
+        modal.add_text(
+            format!("FAZENDA #{} - LOCALIZACAO: ({}, {})", farm_id, farm.grid_x, farm.grid_y),
+            170.0,
+            330.0,
+            1.8,
+            Color::WHITE,
+        );
+        modal.add_text(
+            format!("SALDO: {} OURO  |  ESTOQUE: {} COMIDA", self.world.gold, self.world.food),
+            170.0,
+            370.0,
+            1.6,
+            UiColor::GOLD_FILL,
+        );
+
+        match &farm.state {
+            game_core::FarmState::Idle => {
+                modal.add_text(
+                    "STATUS: CANTEIRO LIVRE PARA PLANTIO",
+                    170.0,
+                    415.0,
+                    1.7,
+                    Color::rgb(0.4, 0.95, 0.45),
+                );
+                modal.add_text(
+                    "SELECIONE A SEMENTE DESEJADA:",
+                    170.0,
+                    455.0,
+                    1.6,
+                    Color::WHITE,
+                );
+
+                let mut y_btn = 495.0;
+                for crop in self.crops_catalog.all_sorted() {
+                    let affordable = self.world.gold >= crop.gold_cost;
+                    let label = format!(
+                        "{}: {} OURO ({}S -> +{} COMIDA)",
+                        crop.name.to_uppercase().replace("Á", "A").replace("Í", "I"),
+                        crop.gold_cost,
+                        crop.growth_time_secs,
+                        crop.food_yield
+                    );
+
+                    modal.add_button(
+                        UiButton::new(
+                            format!("plant_crop:{}:{}", farm_id, crop.id),
+                            Rect::new(170.0, y_btn, 740.0, 50.0),
+                            label,
+                        )
+                        .with_colors(
+                            if affordable { UiColor::BTN_PRIMARY } else { UiColor::BTN_DISABLED },
+                            Color::WHITE,
+                        )
+                        .with_disabled(!affordable)
+                        .with_scale(1.7),
+                    );
+                    y_btn += 56.0;
+                }
+            }
+            game_core::FarmState::Growing {
+                crop_id,
+                elapsed_secs,
+                duration_secs,
+                food_yield,
+            } => {
+                let crop_name = self
+                    .crops_catalog
+                    .get(crop_id)
+                    .map(|c| c.name.to_uppercase().replace("Á", "A").replace("Í", "I"))
+                    .unwrap_or_else(|| crop_id.to_uppercase());
+                let remaining = (*duration_secs as f64 - elapsed_secs).max(0.0).ceil() as u64;
+                let ratio = (*elapsed_secs as f32 / *duration_secs as f32).clamp(0.0, 1.0);
+
+                modal.add_text(
+                    format!("STATUS: CULTIVANDO {}", crop_name),
+                    170.0,
+                    420.0,
+                    1.8,
+                    Color::rgb(0.4, 0.85, 1.0),
+                );
+                modal.add_text(
+                    format!(
+                        "PROGRESSO: {:.0}s / {}s (RESTAM {}s)",
+                        elapsed_secs, duration_secs, remaining
+                    ),
+                    170.0,
+                    465.0,
+                    1.6,
+                    Color::WHITE,
+                );
+
+                modal.add_progress_bar(UiProgressBar::new(
+                    Rect::new(170.0, 505.0, 740.0, 24.0),
+                    ratio,
+                    Color::rgb(0.35, 0.85, 0.35),
+                ));
+
+                modal.add_text(
+                    format!("PRODUCAO ESPERADA NA COLHEITA: +{} COMIDA", food_yield),
+                    170.0,
+                    555.0,
+                    1.6,
+                    UiColor::GOLD_ACCENT,
+                );
+                modal.add_text(
+                    "O tempo de cultivo avança continuamente mesmo fora do jogo!",
+                    170.0,
+                    600.0,
+                    1.5,
+                    Color::WHITE,
+                );
+            }
+            game_core::FarmState::ReadyToHarvest {
+                crop_id,
+                food_yield,
+            } => {
+                let crop_name = self
+                    .crops_catalog
+                    .get(crop_id)
+                    .map(|c| c.name.to_uppercase().replace("Á", "A").replace("Í", "I"))
+                    .unwrap_or_else(|| crop_id.to_uppercase());
+
+                modal.add_text(
+                    format!("STATUS: {} MADURA!", crop_name),
+                    170.0,
+                    420.0,
+                    2.0,
+                    UiColor::GOLD_ACCENT,
+                );
+                modal.add_text(
+                    format!("PRODUCAO PRONTA: +{} COMIDA NUTRITIVA", food_yield),
+                    170.0,
+                    470.0,
+                    1.8,
+                    Color::rgb(0.4, 0.95, 0.45),
+                );
+
+                modal.add_button(
+                    UiButton::new(
+                        format!("harvest_farm:{}", farm_id),
+                        Rect::new(190.0, 560.0, 700.0, 72.0),
+                        format!("COLHER +{} DE COMIDA", food_yield),
+                    )
+                    .with_colors(UiColor::BTN_PRIMARY, Color::WHITE)
+                    .with_scale(2.0),
+                );
+            }
+        }
+
+        self.ui.open_modal(modal);
+    }
+
+    /// Abre janela modal do Ninho de Incubação (choca, aceleradores e eclosão).
+    pub fn open_hatchery_modal(&mut self) {
+        let mut modal = UiModal::new(
+            "modal_hatchery",
+            "NINHO DE INCUBACAO DE OVOS",
+            Rect::new(120.0, 200.0, 840.0, 800.0),
+        );
+
+        let egg_count = self.world.hatchery.eggs.len();
+        let max_slots = self.world.hatchery.max_slots;
+        let speed_mult = self.world.hatchery.total_speed_multiplier();
+
+        modal.add_text(
+            format!("OCUPACAO: {} / {} SLOTS DE OVOS", egg_count, max_slots),
+            150.0,
+            270.0,
+            1.8,
+            Color::WHITE,
+        );
+        modal.add_text(
+            format!("VELOCIDADE ATUAL: {:.1}x (MODIFICADORES ATIVOS: {})", speed_mult, self.world.hatchery.modifiers.len()),
+            150.0,
+            310.0,
+            1.6,
+            UiColor::GOLD_ACCENT,
+        );
+
+        if self.world.hatchery.eggs.is_empty() {
+            modal.add_text(
+                "NENHUM OVO EM INCUBACAO NO MOMENTO.",
+                150.0,
+                380.0,
+                1.8,
+                Color::rgb(0.85, 0.85, 0.85),
+            );
+            modal.add_text(
+                "Dica: Compre ovos mono-elementais na Loja ou cruze",
+                150.0,
+                425.0,
+                1.5,
+                Color::WHITE,
+            );
+            modal.add_text(
+                "criaturas de nivel 4+ no Altar para gerar hibridos unicos!",
+                150.0,
+                455.0,
+                1.5,
+                Color::WHITE,
+            );
+        } else {
+            let mut y_egg = 360.0;
+            let eggs_snapshot = self.world.hatchery.eggs.clone();
+            for egg in &eggs_snapshot {
+                let spec = self.catalog.get(&egg.species_id);
+                let name = spec
+                    .map(|s| s.name.to_uppercase().replace("Á", "A").replace("Í", "I").replace("Â", "A"))
+                    .unwrap_or_else(|| egg.species_id.to_uppercase());
+                let rarity = spec.map(|s| format!("{:?}", s.rarity)).unwrap_or_else(|| "Comum".into());
+
+                modal.add_text(
+                    format!("OVO #{}: {} [{}]", egg.egg_id, name, rarity.to_uppercase()),
+                    150.0,
+                    y_egg,
+                    1.7,
+                    Color::rgb(1.0, 0.75, 0.35),
+                );
+
+                let ratio = (egg.elapsed_secs as f32 / egg.total_duration_secs.max(1) as f32).clamp(0.0, 1.0);
+                modal.add_progress_bar(UiProgressBar::new(
+                    Rect::new(150.0, y_egg + 26.0, 780.0, 18.0),
+                    ratio,
+                    if egg.is_ready() { Color::rgb(0.35, 0.95, 0.45) } else { UiColor::GOLD_FILL },
+                ));
+
+                if egg.is_ready() {
+                    modal.add_text(
+                        "STATUS: PRONTO PARA ECLODIR!",
+                        150.0,
+                        y_egg + 56.0,
+                        1.5,
+                        Color::rgb(0.4, 0.95, 0.45),
+                    );
+                    modal.add_button(
+                        UiButton::new(
+                            format!("hatch_egg:{}", egg.egg_id),
+                            Rect::new(490.0, y_egg + 48.0, 250.0, 44.0),
+                            "CHOCAR NO SANTUARIO",
+                        )
+                        .with_colors(UiColor::BTN_PRIMARY, Color::WHITE)
+                        .with_scale(1.5),
+                    );
+                } else {
+                    modal.add_text(
+                        format!("CHOCANDO... RESTAM {}s", egg.remaining_secs()),
+                        150.0,
+                        y_egg + 56.0,
+                        1.5,
+                        Color::WHITE,
+                    );
+                }
+
+                // Botão de vender / liberar ovo
+                modal.add_button(
+                    UiButton::new(
+                        format!("sell_egg:{}", egg.egg_id),
+                        Rect::new(750.0, y_egg + 48.0, 180.0, 44.0),
+                        "VENDER",
+                    )
+                    .with_colors(UiColor::BTN_SECONDARY, Color::WHITE)
+                    .with_scale(1.5),
+                );
+
+                y_egg += 105.0;
+            }
+        }
+
+        self.ui.open_modal(modal);
+    }
+
+    /// Abre janela modal do Bestiário (descobertas e resgate de marcos de recompensa).
+    pub fn open_bestiary_modal(&mut self) {
+        let mut modal = UiModal::new(
+            "modal_bestiary",
+            "COMPENDIO DO BESTIARIO",
+            Rect::new(120.0, 180.0, 840.0, 820.0),
+        );
+
+        let discovered = self.world.bestiary.discovered_count();
+        let total = self.catalog.count();
+        let pct = self.world.bestiary.completion_percentage(&self.catalog);
+
+        modal.add_text(
+            format!("PROGRESSO DE COLECAO: {} / {} ESPECIES ({:.1}%)", discovered, total, pct),
+            150.0,
+            250.0,
+            1.8,
+            UiColor::GOLD_ACCENT,
+        );
+        modal.add_progress_bar(UiProgressBar::new(
+            Rect::new(150.0, 285.0, 780.0, 20.0),
+            (pct / 100.0).clamp(0.0, 1.0) as f32,
+            UiColor::XP_FILL,
+        ));
+
+        modal.add_text(
+            "MARCOS DE CONQUISTA & RECOMPENSAS:",
+            150.0,
+            325.0,
+            1.7,
+            Color::WHITE,
+        );
+
+        let mut y_m = 360.0;
+        for milestone in self.milestones_catalog.all_sorted() {
+            let is_claimed = self.world.bestiary.is_milestone_claimed(&milestone.id);
+            let is_satisfied = self.world.bestiary.is_milestone_met(milestone, &self.catalog);
+
+            modal.add_text(
+                format!("MARCO: {} - {}", milestone.title.to_uppercase().replace("Ã", "A"), milestone.description),
+                150.0,
+                y_m,
+                1.5,
+                Color::WHITE,
+            );
+            modal.add_text(
+                format!("PREMIO: +{} OURO, +{} COMIDA", milestone.reward.gold, milestone.reward.food),
+                150.0,
+                y_m + 25.0,
+                1.4,
+                UiColor::GOLD_FILL,
+            );
+
+            let (btn_label, btn_color, disabled) = if is_claimed {
+                ("JA RESGATADO", UiColor::BTN_DISABLED, true)
+            } else if is_satisfied {
+                ("REIVINDICAR PREMIO!", UiColor::BTN_PRIMARY, false)
+            } else {
+                ("BLOQUEADO", UiColor::BTN_DISABLED, true)
+            };
+
+            modal.add_button(
+                UiButton::new(
+                    format!("claim_milestone:{}", milestone.id),
+                    Rect::new(650.0, y_m + 8.0, 280.0, 44.0),
+                    btn_label,
+                )
+                .with_colors(btn_color, Color::WHITE)
+                .with_disabled(disabled)
+                .with_scale(1.5),
+            );
+
+            y_m += 74.0;
+        }
+
+        self.ui.open_modal(modal);
+    }
 }
 
 impl Default for BestigardGame {
@@ -1375,6 +1747,76 @@ impl GameState for BestigardGame {
                             self.ui.close_modal();
                             println!("Arena: Batalha concluida. Retornando ao santuario.");
                         }
+                        "btn_open_hatchery" => {
+                            self.open_hatchery_modal();
+                        }
+                        "btn_open_bestiary" => {
+                            self.open_bestiary_modal();
+                        }
+                        id if id.starts_with("plant_crop:") => {
+                            let parts: Vec<&str> = id["plant_crop:".len()..].split(':').collect();
+                            if parts.len() == 2 {
+                                if let (Ok(farm_id), Some(crop)) = (parts[0].parse::<u64>(), self.crops_catalog.get(parts[1])) {
+                                    match self.world.plant_crop(farm_id, crop) {
+                                        Ok(_) => println!("Fazenda #{}: plantado '{}'.", farm_id, crop.name),
+                                        Err(e) => println!("Fazenda #{}: falha ao plantar: {}", farm_id, e),
+                                    }
+                                    self.open_farm_modal(farm_id);
+                                }
+                            }
+                        }
+                        id if id.starts_with("harvest_farm:") => {
+                            if let Ok(farm_id) = id["harvest_farm:".len()..].parse::<u64>() {
+                                match self.world.harvest_farm(farm_id) {
+                                    Ok(food) => println!("Fazenda #{}: colhido +{} comida!", farm_id, food),
+                                    Err(e) => println!("Fazenda #{}: falha ao colher: {}", farm_id, e),
+                                }
+                                self.open_farm_modal(farm_id);
+                            }
+                        }
+                        id if id.starts_with("hatch_egg:") => {
+                            if let Ok(egg_id) = id["hatch_egg:".len()..].parse::<u64>() {
+                                let target_hab = self.world.habitats.iter().find_map(|(&hid, h)| {
+                                    let htype = self.habitats_catalog.get(&h.type_id)?;
+                                    let tier_info = htype.get_tier_info(h.tier)?;
+                                    if h.creature_ids.len() < tier_info.max_creatures {
+                                        let egg = self.world.hatchery.eggs.iter().find(|e| e.egg_id == egg_id)?;
+                                        let spec = self.catalog.get(&egg.species_id)?;
+                                        if htype.accepts_elements(&spec.elements) {
+                                            return Some(hid);
+                                        }
+                                    }
+                                    None
+                                });
+
+                                if let Some(target_hid) = target_hab {
+                                    match self.world.hatch_egg(egg_id, target_hid, &self.catalog, &self.habitats_catalog) {
+                                        Ok(cid) => println!("Ninho: Ovo #{} chocado com sucesso -> Nova criatura #{} no Habitat #{}!", egg_id, cid, target_hid),
+                                        Err(e) => println!("Ninho: Falha ao chocar ovo #{}: {}", egg_id, e),
+                                    }
+                                } else {
+                                    println!("Ninho: Nenhum habitat compatível com vaga disponível para este ovo.");
+                                }
+                                self.open_hatchery_modal();
+                            }
+                        }
+                        id if id.starts_with("sell_egg:") => {
+                            if let Ok(egg_id) = id["sell_egg:".len()..].parse::<u64>() {
+                                match self.world.sell_egg(egg_id, &self.catalog) {
+                                    Ok(gold) => println!("Ninho: Ovo #{} vendido por +{} ouro!", egg_id, gold),
+                                    Err(e) => println!("Ninho: Falha ao vender ovo #{}: {}", egg_id, e),
+                                }
+                                self.open_hatchery_modal();
+                            }
+                        }
+                        id if id.starts_with("claim_milestone:") => {
+                            let m_id = &id["claim_milestone:".len()..];
+                            match self.world.claim_milestone(m_id, &self.milestones_catalog, &self.catalog) {
+                                Ok(reward) => println!("Bestiário: Marco '{}' resgatado! +{} ouro, +{} comida.", m_id, reward.gold, reward.food),
+                                Err(e) => println!("Bestiário: Erro ao resgatar marco '{}': {}", m_id, e),
+                            }
+                            self.open_bestiary_modal();
+                        }
                         _ => {}
                     }
                 }
@@ -1414,6 +1856,17 @@ impl GameState for BestigardGame {
                         self.open_obstacle_modal(oid);
                         continue;
                     }
+                }
+
+                // Se tocou sobre uma fazenda, abre modal da fazenda
+                if let Some((&farm_id, _)) = self.world.farms.iter().find(|(_, f)| {
+                    let fx = f.grid_x as i32;
+                    let fy = f.grid_y as i32;
+                    cell.0 >= fx && cell.0 < fx + f.width as i32 && cell.1 >= fy && cell.1 < fy + f.height as i32
+                }) {
+                    println!("UI: Selecionada Fazenda #{} no mapa -> Abrindo menu de fazenda", farm_id);
+                    self.open_farm_modal(farm_id);
+                    continue;
                 }
 
                 // Se tocou sobre um habitat, abre modal do habitat
@@ -1552,17 +2005,17 @@ fn main() {
     println!("\n--- INTERFACE DE USUÁRIO (HUD & MENUS MODAIS) ---");
 
     // A) Toque no botão global do HUD: [COLETAR]
-    println!("1. Testando toque no botão de HUD [COLETAR OURO] (pos: 500, 40)...");
+    println!("1. Testando toque no botão de HUD [COLETAR OURO] (pos: 400, 40)...");
     let mut hud_input = InputManager::new();
-    hud_input.on_mouse_button_down(MouseButton::Left, 500.0, 40.0);
-    hud_input.on_mouse_button_up(MouseButton::Left, 500.0, 40.0);
+    hud_input.on_mouse_button_down(MouseButton::Left, 400.0, 40.0);
+    hud_input.on_mouse_button_up(MouseButton::Left, 400.0, 40.0);
     state.on_input(&hud_input);
     hud_input.clear_events();
 
     // B) Toque no botão global do HUD: [CRIATURA] para abrir modal de inspeção
-    println!("\n2. Abrindo diálogo modal de Gestão da Criatura Ignis [CRIATURA] (pos: 620, 40)...");
-    hud_input.on_mouse_button_down(MouseButton::Left, 620.0, 40.0);
-    hud_input.on_mouse_button_up(MouseButton::Left, 620.0, 40.0);
+    println!("\n2. Abrindo diálogo modal de Gestão da Criatura Ignis [CRIATURA] (pos: 500, 40)...");
+    hud_input.on_mouse_button_down(MouseButton::Left, 500.0, 40.0);
+    hud_input.on_mouse_button_up(MouseButton::Left, 500.0, 40.0);
     state.on_input(&hud_input);
     hud_input.clear_events();
     assert!(state.ui.is_modal_open());
@@ -1593,9 +2046,9 @@ fn main() {
         creature.stage = game_core::GrowthStage::from_level(4);
     }
 
-    println!("Abrindo modal do [CRUZAMENTO] (pos: 740, 40)...");
-    hud_input.on_mouse_button_down(MouseButton::Left, 740.0, 40.0);
-    hud_input.on_mouse_button_up(MouseButton::Left, 740.0, 40.0);
+    println!("Abrindo modal do [CRUZAMENTO] (pos: 600, 40)...");
+    hud_input.on_mouse_button_down(MouseButton::Left, 600.0, 40.0);
+    hud_input.on_mouse_button_up(MouseButton::Left, 600.0, 40.0);
     state.on_input(&hud_input);
     hud_input.clear_events();
     assert!(state.ui.is_modal_open());
@@ -1644,8 +2097,8 @@ fn main() {
     let habitats_before = state.world.habitats.len();
     let gold_before = state.world.gold;
 
-    println!("1. Tocando em [LOJA] (pos: 860, 40) e escolhendo [HABITAT WATER]...");
-    tap_at(state, 860.0, 40.0);
+    println!("1. Tocando em [LOJA] (pos: 890, 40) e escolhendo [HABITAT WATER]...");
+    tap_at(state, 890.0, 40.0);
     assert!(state.ui.is_modal_open());
     tap_at(state, 400.0, 780.0);
     assert!(state.placement.is_some());
@@ -1678,7 +2131,7 @@ fn main() {
     );
 
     println!("5. Cancelamento: abrindo [LOJA] -> [FAZENDA] e cancelando em [CANCELAR] (pos: 740, 1788)...");
-    tap_at(state, 860.0, 40.0);
+    tap_at(state, 890.0, 40.0);
     tap_at(state, 400.0, 840.0);
     assert!(state.placement.is_some());
     let gold_after_build = state.world.gold;
@@ -1706,8 +2159,8 @@ fn main() {
     println!("\n--- ARENA ELEMENTAL DE BATALHA & UI INTERATIVA (PASSO 5.4) ---");
     let gold_before_arena = state.world.gold;
 
-    println!("1. Abrindo Arena Elemental de Batalha via botão [ARENA] no HUD (pos: 980, 40)...");
-    tap_at(state, 980.0, 40.0);
+    println!("1. Abrindo Arena Elemental de Batalha via botão [ARENA] no HUD (pos: 990, 40)...");
+    tap_at(state, 990.0, 40.0);
     assert!(state.ui.is_modal_open());
     assert!(state.arena.is_some());
     let arena_state = state.arena.as_ref().unwrap();
@@ -1769,7 +2222,44 @@ fn main() {
     assert!(!state.ui.is_modal_open());
     println!("Arena fechada e santuário restaurado com sucesso!");
 
+    // 11. Demonstração dos Modais de Fazenda, Ninho e Bestiário (Passo 5.6)
+    println!("\n--- MODAIS DE FAZENDA, NINHO E BESTIÁRIO (PASSO 5.6) ---");
+
+    // A) Toque na Fazenda (célula 6, 2) abre FarmModal
+    let (farm_sx, farm_sy) = cell_to_screen(state, 6, 2);
+    println!("1. Tocando na Fazenda em (6, 2) (pos: {:.0}, {:.0})...", farm_sx, farm_sy);
+    tap_at(state, farm_sx, farm_sy);
+    assert!(state.ui.is_modal_open());
+    assert_eq!(state.ui.active_modal.as_ref().unwrap().id, "modal_farm");
+    println!("FarmModal aberto com sucesso!");
+
+    // Planta Fruta Silvestre via botão da fazenda (primeira semente na lista)
+    println!("2. Plantando Fruta Silvestre na Fazenda via botão interno...");
+    tap_at(state, 300.0, 520.0);
+    let farm_id = state.selected_farm_id.unwrap();
+    assert!(matches!(state.world.farms[&farm_id].state, game_core::FarmState::Growing { .. }));
+    println!("Plantação iniciada! Estado da fazenda: em crescimento.");
+    state.ui.close_modal();
+
+    // B) Botão [NINHO] no HUD (pos: 700, 40) abre HatcheryModal
+    println!("3. Abrindo modal do Ninho de Incubação [NINHO] (pos: 700, 40)...");
+    tap_at(state, 700.0, 40.0);
+    assert!(state.ui.is_modal_open());
+    assert_eq!(state.ui.active_modal.as_ref().unwrap().id, "modal_hatchery");
+    println!("HatcheryModal aberto com sucesso! Ovos em incubação: {}", state.world.hatchery.eggs.len());
+    state.ui.close_modal();
+
+    // C) Botão [BESTIARIO] no HUD (pos: 800, 40) abre BestiaryModal
+    println!("4. Abrindo modal do Bestiário [BESTIARIO] (pos: 800, 40)...");
+    tap_at(state, 800.0, 40.0);
+    assert!(state.ui.is_modal_open());
+    assert_eq!(state.ui.active_modal.as_ref().unwrap().id, "modal_bestiary");
+    println!("BestiaryModal aberto com sucesso! Progresso de coleção: {:.1}%", state.world.bestiary.completion_percentage(&state.catalog));
+    state.ui.close_modal();
+    assert!(!state.ui.is_modal_open());
+
     println!("\n>> Interface de Usuário (HUD e Menus Modais) validada com 100% de sucesso! <<");
     println!(">> Modo de Construção e Limpeza de Terreno validados com 100% de sucesso! <<");
     println!(">> Arena Elemental de Batalha e UI Interativa validadas com 100% de sucesso! <<");
+    println!(">> Modais de Fazenda, Ninho e Bestiário validados com 100% de sucesso! <<");
 }

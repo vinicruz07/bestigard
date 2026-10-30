@@ -247,6 +247,13 @@ impl CropCatalog {
     pub fn count(&self) -> usize {
         self.crops.len()
     }
+
+    /// Retorna as culturas agrícolas cadastradas ordenadas por custo em ouro crescente.
+    pub fn all_sorted(&self) -> Vec<&CropType> {
+        let mut list: Vec<&CropType> = self.crops.values().collect();
+        list.sort_by(|a, b| a.gold_cost.cmp(&b.gold_cost));
+        list
+    }
 }
 
 /// Resultado detalhado de uma ação de alimentação.

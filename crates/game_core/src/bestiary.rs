@@ -127,6 +127,11 @@ impl Bestiary {
         self.discoveries.contains_key(species_id)
     }
 
+    /// Retorna se um marco específico de coleção já foi resgatado.
+    pub fn is_milestone_claimed(&self, milestone_id: &str) -> bool {
+        self.claimed_milestones.contains(milestone_id)
+    }
+
     /// Total de espécies catalogadas pelo jogador.
     pub fn discovered_count(&self) -> usize {
         self.discoveries.len()
@@ -317,6 +322,13 @@ impl MilestoneCatalog {
 
     pub fn count(&self) -> usize {
         self.milestones.len()
+    }
+
+    /// Lista todos os marcos ordenados pelo id (ordem estável para menus de interface).
+    pub fn all_sorted(&self) -> Vec<&CollectionMilestone> {
+        let mut list: Vec<&CollectionMilestone> = self.milestones.values().collect();
+        list.sort_by(|a, b| a.id.cmp(&b.id));
+        list
     }
 }
 
