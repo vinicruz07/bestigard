@@ -40,7 +40,9 @@ pub use habitat::{
 pub use incubation::{
     EggInstance, HatcheryError, HatcheryInstance, IncubationSpeedModifier, ModifierSource,
 };
-pub use world::{SanctuaryWorld, WorldError, FARM_BUILD_COST_GOLD};
+pub use world::{
+    OfflineProgressReport, SanctuaryWorld, WorldError, FARM_BUILD_COST_GOLD, MAX_OFFLINE_SECONDS,
+};
 pub use obstacle::{Obstacle, ObstacleKind};
 
 /// Retorna a versão da crate de regras centrais.

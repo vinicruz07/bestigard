@@ -82,6 +82,20 @@ impl CreatureSpecies {
     pub fn validate_elements(&self, registry: &ElementRegistry) -> bool {
         !self.elements.is_empty() && self.elements.iter().all(|el| registry.contains(el))
     }
+
+    /// Retorna o preço em ouro para comprar o ovo desta espécie diretamente no mercado.
+    /// Apenas espécies mono-elementais fundamentais podem ser compradas; híbridos exigem cruzamento (`None`).
+    pub fn egg_shop_price_gold(&self) -> Option<u64> {
+        if self.elements.len() != 1 {
+            return None;
+        }
+        match self.rarity {
+            Rarity::Common => Some(150),
+            Rarity::Uncommon => Some(350),
+            Rarity::Rare => Some(750),
+            Rarity::Epic | Rarity::Legendary | Rarity::Mythic => None,
+        }
+    }
 }
 
 /// Instância única pertencente a um jogador no mundo de Bestigard.
@@ -386,6 +400,16 @@ impl SpeciesCatalog {
         self.species.len()
     }
 
+    /// Lista todas as espécies disponíveis para compra direta de ovo no mercado, ordenadas por preço e ID.
+    pub fn shop_eggs_sorted(&self) -> Vec<(&CreatureSpecies, u64)> {
+        let mut list: Vec<(&CreatureSpecies, u64)> = self
+            .species
+            .values()
+            .filter_map(|s| s.egg_shop_price_gold().map(|price| (s, price)))
+            .collect();
+        list.sort_by(|(a, pa), (b, pb)| pa.cmp(pb).then_with(|| a.id.cmp(&b.id)));
+        list
+    }
 }
 
 #[cfg(test)]

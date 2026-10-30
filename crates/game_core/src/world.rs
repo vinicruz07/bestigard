@@ -4,7 +4,7 @@
 use crate::bestiary::{Bestiary, MilestoneCatalog, MilestoneReward};
 use crate::breeding::{BreedingEngine, BreedingError, BreedingResult};
 use crate::creature::{CreatureInstance, CreatureSpecies, SpeciesCatalog};
-use crate::farming::{CropType, FarmError, FarmInstance, FeedResult, FeedingError, FeedingSystem};
+use crate::farming::{CropType, FarmError, FarmInstance, FarmState, FeedResult, FeedingError, FeedingSystem};
 use crate::habitat::{HabitatCatalog, HabitatError, HabitatInstance, IslandGrid};
 use crate::incubation::{HatcheryError, HatcheryInstance};
 use crate::obstacle::{Obstacle, ObstacleKind};
@@ -22,6 +22,7 @@ pub enum WorldError {
     CreatureNotFound(u64),
     FarmNotFound(u64),
     SpeciesNotFound(String),
+    SpeciesNotPurchasable(String),
     ObstacleNotFound(u64),
     InsufficientGold { required: u64, available: u64 },
 }
@@ -67,6 +68,9 @@ impl std::fmt::Display for WorldError {
             Self::CreatureNotFound(id) => write!(f, "Criatura #{} não encontrada no santuário", id),
             Self::FarmNotFound(id) => write!(f, "Fazenda #{} não encontrada", id),
             Self::SpeciesNotFound(id) => write!(f, "Espécie '{}' não encontrada no catálogo", id),
+            Self::SpeciesNotPurchasable(id) => {
+                write!(f, "O ovo da espécie '{}' não pode ser comprado diretamente (requer cruzamento)", id)
+            }
             Self::ObstacleNotFound(id) => write!(f, "Obstáculo #{} não encontrado", id),
             Self::InsufficientGold { required, available } => {
                 write!(f, "Ouro insuficiente: necessário {}, disponível {}", required, available)
@@ -77,11 +81,26 @@ impl std::fmt::Display for WorldError {
 
 impl std::error::Error for WorldError {}
 
+/// Relatório do progresso calculado durante ausência do jogador (offline catch-up).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct OfflineProgressReport {
+    pub elapsed_applied_secs: f64,
+    pub gold_generated: u64,
+    pub farms_matured: usize,
+    pub eggs_ready: usize,
+}
+
+/// Limite máximo justo de simulação offline (8 horas = 28.800 segundos).
+pub const MAX_OFFLINE_SECONDS: f64 = 8.0 * 3600.0;
+
 /// O estado completo, unificado e serializável do mundo e santuário do jogador.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SanctuaryWorld {
     pub player_name: String,
     pub player_level: u32,
+    /// Experiência acumulada do jogador rumo ao próximo nível do santuário.
+    #[serde(default)]
+    pub player_xp: u64,
     pub gold: u64,
     pub food: u64,
     pub island_grid: IslandGrid,
@@ -112,6 +131,7 @@ impl SanctuaryWorld {
         Self {
             player_name: player_name.into(),
             player_level: 1,
+            player_xp: 0,
             gold: starting_gold,
             food: starting_food,
             island_grid: IslandGrid::new(grid_width, grid_height),
@@ -172,6 +192,73 @@ impl SanctuaryWorld {
         Ok(world)
     }
 
+    /// XP necessário para o jogador avançar para o próximo nível do santuário.
+    pub fn player_xp_for_next_level(&self) -> u64 {
+        let lvl = self.player_level.max(1) as f64;
+        (100.0 * lvl.powf(1.5)).round() as u64
+    }
+
+    /// Adiciona experiência ao jogador e processa subidas de nível do santuário. Retorna quantos níveis subiu.
+    pub fn add_player_xp(&mut self, amount: u64) -> u32 {
+        self.player_xp += amount;
+        let initial_level = self.player_level;
+
+        while self.player_xp >= self.player_xp_for_next_level() {
+            self.player_xp -= self.player_xp_for_next_level();
+            self.player_level += 1;
+        }
+
+        self.player_level - initial_level
+    }
+
+    /// Aplica progresso offline baseado no tempo decorrido desde a última sessão, respeitando o limite justo (`MAX_OFFLINE_SECONDS`).
+    pub fn apply_offline_progress(
+        &mut self,
+        elapsed_real_secs: f64,
+        catalog: &SpeciesCatalog,
+        hab_catalog: &HabitatCatalog,
+    ) -> OfflineProgressReport {
+        let capped_secs = elapsed_real_secs.clamp(0.0, MAX_OFFLINE_SECONDS);
+        if capped_secs <= 0.0 {
+            return OfflineProgressReport {
+                elapsed_applied_secs: 0.0,
+                gold_generated: 0,
+                farms_matured: 0,
+                eggs_ready: 0,
+            };
+        }
+
+        let gold_before: u64 = self.habitats.values().map(|h| h.accumulated_gold).sum();
+        let growing_before: usize = self
+            .farms
+            .values()
+            .filter(|f| matches!(f.state, FarmState::Growing { .. }))
+            .count();
+        let ready_before: usize = self
+            .farms
+            .values()
+            .filter(|f| matches!(f.state, FarmState::ReadyToHarvest { .. }))
+            .count();
+
+        self.tick(capped_secs, catalog, hab_catalog);
+
+        let gold_after: u64 = self.habitats.values().map(|h| h.accumulated_gold).sum();
+        let ready_after: usize = self
+            .farms
+            .values()
+            .filter(|f| matches!(f.state, FarmState::ReadyToHarvest { .. }))
+            .count();
+        let farms_matured = ready_after.saturating_sub(ready_before).min(growing_before);
+        let eggs_ready = self.hatchery.eggs.iter().filter(|e| e.is_ready()).count();
+
+        OfflineProgressReport {
+            elapsed_applied_secs: capped_secs,
+            gold_generated: gold_after.saturating_sub(gold_before),
+            farms_matured,
+            eggs_ready,
+        }
+    }
+
     /// Posiciona um obstáculo na ilha ocupando as células do grid.
     pub fn add_obstacle(&mut self, kind: ObstacleKind, grid_x: u32, grid_y: u32) -> Result<u64, WorldError> {
         let (w, h) = kind.footprint();
@@ -202,6 +289,7 @@ impl SanctuaryWorld {
         self.gold -= cost;
         self.island_grid.release_area(obstacle.grid_x, obstacle.grid_y, w, h, obstacle_id);
         self.obstacles.remove(&obstacle_id);
+        self.add_player_xp(15);
         Ok(cost)
     }
 
@@ -273,8 +361,56 @@ impl SanctuaryWorld {
 
         self.gold -= gold_cost;
         self.habitats.insert(hab_id, habitat);
+        self.add_player_xp(30);
 
         Ok(hab_id)
+    }
+
+    /// Retorna o custo em ouro para evoluir um habitat para o próximo tier (`None` se já estiver no tier máximo).
+    pub fn habitat_upgrade_cost(
+        &self,
+        habitat_id: u64,
+        hab_catalog: &HabitatCatalog,
+    ) -> Option<u64> {
+        let hab = self.habitats.get(&habitat_id)?;
+        let hab_type = hab_catalog.get(&hab.type_id)?;
+        hab_type
+            .get_tier_info(hab.tier + 1)
+            .map(|t| t.upgrade_cost_gold)
+    }
+
+    /// Evolui um habitat para o próximo tier descontando ouro e expandindo capacidade de criaturas e cofre.
+    pub fn upgrade_habitat(
+        &mut self,
+        habitat_id: u64,
+        hab_catalog: &HabitatCatalog,
+    ) -> Result<u32, WorldError> {
+        let hab = self.habitats.get(&habitat_id).ok_or_else(|| {
+            WorldError::Habitat(HabitatError::HabitatNotFound { habitat_id })
+        })?;
+        let hab_type = hab_catalog.get(&hab.type_id).ok_or_else(|| {
+            WorldError::Habitat(HabitatError::HabitatNotFound { habitat_id })
+        })?;
+
+        let next_tier = hab.tier + 1;
+        let next_info = hab_type
+            .get_tier_info(next_tier)
+            .ok_or(WorldError::Habitat(HabitatError::MaxTierReached))?;
+
+        let cost = next_info.upgrade_cost_gold;
+        if self.gold < cost {
+            return Err(WorldError::InsufficientGold {
+                required: cost,
+                available: self.gold,
+            });
+        }
+
+        let hab_mut = self.habitats.get_mut(&habitat_id).unwrap();
+        hab_mut.upgrade(hab_type)?;
+        self.gold -= cost;
+        self.add_player_xp(50);
+
+        Ok(next_tier)
     }
 
     /// Constrói uma nova fazenda agrícola consumindo ouro e posicionando no grid.
@@ -300,6 +436,7 @@ impl SanctuaryWorld {
 
         self.gold -= gold_cost;
         self.farms.insert(farm_id, farm);
+        self.add_player_xp(20);
 
         Ok(farm_id)
     }
@@ -316,6 +453,7 @@ impl SanctuaryWorld {
         let farm = self.farms.get_mut(&farm_id).ok_or(WorldError::FarmNotFound(farm_id))?;
         let food_yield = farm.harvest()?;
         self.food += food_yield;
+        self.add_player_xp(10);
         Ok(food_yield)
     }
 
@@ -344,14 +482,135 @@ impl SanctuaryWorld {
     pub fn feed_creature(&mut self, creature_id: u64) -> Result<FeedResult, WorldError> {
         let creature = self.creatures.get_mut(&creature_id).ok_or(WorldError::CreatureNotFound(creature_id))?;
         let res = FeedingSystem::feed_creature(creature, &mut self.food)?;
-        self.bestiary.record_level(&creature.species_id, res.new_level);
+        let species_id = creature.species_id.clone();
+        self.bestiary.record_level(&species_id, res.new_level);
+        self.add_player_xp(15);
         Ok(res)
     }
 
-    /// Deposita um novo ovo no ninho da incubadora.
+    /// Renomeia uma criatura (ou restaura o nome da espécie caso o apelido seja vazio).
+    pub fn rename_creature(
+        &mut self,
+        creature_id: u64,
+        new_nickname: impl Into<String>,
+    ) -> Result<(), WorldError> {
+        let creature = self
+            .creatures
+            .get_mut(&creature_id)
+            .ok_or(WorldError::CreatureNotFound(creature_id))?;
+        let raw = new_nickname.into();
+        let trimmed = raw.trim();
+        creature.nickname = if trimmed.is_empty() {
+            None
+        } else {
+            Some(trimmed.to_string())
+        };
+        Ok(())
+    }
+
+    /// Transfere uma criatura para outro habitat compatível que possua capacidade livre.
+    pub fn relocate_creature(
+        &mut self,
+        creature_id: u64,
+        target_habitat_id: u64,
+        catalog: &SpeciesCatalog,
+        hab_catalog: &HabitatCatalog,
+    ) -> Result<(), WorldError> {
+        let creature_snapshot = self
+            .creatures
+            .get(&creature_id)
+            .ok_or(WorldError::CreatureNotFound(creature_id))?
+            .clone();
+
+        if creature_snapshot.habitat_id == Some(target_habitat_id) {
+            return Ok(());
+        }
+
+        let target_type_id = self
+            .habitats
+            .get(&target_habitat_id)
+            .ok_or(WorldError::Habitat(HabitatError::HabitatNotFound {
+                habitat_id: target_habitat_id,
+            }))?
+            .type_id
+            .clone();
+
+        let target_type = hab_catalog.get(&target_type_id).ok_or(WorldError::Habitat(
+            HabitatError::HabitatNotFound {
+                habitat_id: target_habitat_id,
+            },
+        ))?;
+
+        // 1. Tenta adicionar no habitat de destino (valida afinidade elemental e capacidade)
+        {
+            let target_hab = self.habitats.get_mut(&target_habitat_id).unwrap();
+            target_hab.add_creature(&creature_snapshot, target_type, catalog)?;
+        }
+
+        // 2. Remove do habitat anterior, se houver
+        if let Some(old_hab_id) = creature_snapshot.habitat_id {
+            if let Some(old_hab) = self.habitats.get_mut(&old_hab_id) {
+                old_hab.remove_creature(creature_id);
+            }
+        }
+
+        // 3. Atualiza vínculo na instância da criatura
+        if let Some(creature_mut) = self.creatures.get_mut(&creature_id) {
+            creature_mut.habitat_id = Some(target_habitat_id);
+        }
+
+        Ok(())
+    }
+
+    ///Deposita um novo ovo no ninho da incubadora.
     pub fn deposit_egg(&mut self, species: &CreatureSpecies) -> Result<u64, WorldError> {
         let egg_id = self.hatchery.add_egg(species)?;
         Ok(egg_id)
+    }
+
+    /// Compra um ovo mono-elemental básico na loja usando ouro e deposita no ninho.
+    pub fn buy_egg(
+        &mut self,
+        species_id: &str,
+        catalog: &SpeciesCatalog,
+    ) -> Result<u64, WorldError> {
+        let species = catalog
+            .get(species_id)
+            .ok_or_else(|| WorldError::SpeciesNotFound(species_id.to_string()))?;
+
+        let price = species
+            .egg_shop_price_gold()
+            .ok_or_else(|| WorldError::SpeciesNotPurchasable(species_id.to_string()))?;
+
+        if self.hatchery.eggs.len() >= self.hatchery.max_slots {
+            return Err(WorldError::Hatchery(HatcheryError::HatcheryFull {
+                max_slots: self.hatchery.max_slots,
+            }));
+        }
+
+        if self.gold < price {
+            return Err(WorldError::InsufficientGold {
+                required: price,
+                available: self.gold,
+            });
+        }
+
+        let egg_id = self.hatchery.add_egg(species)?;
+        self.gold -= price;
+        self.add_player_xp(15);
+
+        Ok(egg_id)
+    }
+
+    /// Vende ou libera um ovo do ninho em troca de ouro baseado na raridade.
+    pub fn sell_egg(
+        &mut self,
+        egg_id: u64,
+        catalog: &SpeciesCatalog,
+    ) -> Result<u64, WorldError> {
+        let reward = self.hatchery.sell_or_release_egg(egg_id, catalog)?;
+        self.gold += reward;
+        Ok(reward)
     }
 
     /// Realiza o cruzamento genético determinístico entre duas criaturas e deposita o ovo resultante no ninho.
@@ -387,6 +646,7 @@ impl SanctuaryWorld {
 
         // Deposita o ovo automaticamente no ninho de incubação
         self.deposit_egg(offspring_species)?;
+        self.add_player_xp(25);
 
         Ok(result)
     }
@@ -399,25 +659,48 @@ impl SanctuaryWorld {
         catalog: &SpeciesCatalog,
         hab_catalog: &HabitatCatalog,
     ) -> Result<u64, WorldError> {
+        // Valida primeiro o ovo e o habitat de destino para não consumir o ovo em caso de erro de habitat
+        let egg = self
+            .hatchery
+            .eggs
+            .iter()
+            .find(|e| e.egg_id == egg_id)
+            .ok_or(WorldError::Hatchery(HatcheryError::EggNotFound { egg_id }))?;
+
+        if !egg.is_ready() {
+            return Err(WorldError::Hatchery(HatcheryError::EggNotReady {
+                remaining_secs: egg.remaining_secs(),
+            }));
+        }
+
+        let hab_check = self.habitats.get(&target_habitat_id).ok_or_else(|| {
+            WorldError::Habitat(HabitatError::HabitatNotFound {
+                habitat_id: target_habitat_id,
+            })
+        })?;
+        let hab_type = hab_catalog.get(&hab_check.type_id).ok_or_else(|| {
+            WorldError::Habitat(HabitatError::HabitatNotFound {
+                habitat_id: target_habitat_id,
+            })
+        })?;
+
+        let preview_id = self.next_id_counter;
+        let preview_creature = CreatureInstance::new(preview_id, &egg.species_id);
+        let mut hab_preview = hab_check.clone();
+        hab_preview.add_creature(&preview_creature, hab_type, catalog)?;
+
+        // Tudo validado: consome o ovo e registra a criatura nascida
         let new_id = self.next_id();
-        let new_creature = self.hatchery.hatch_egg(egg_id, new_id, catalog)?;
+        let mut new_creature = self.hatchery.hatch_egg(egg_id, new_id, catalog)?;
+        new_creature.habitat_id = Some(target_habitat_id);
 
-        let hab = self.habitats.get_mut(&target_habitat_id).ok_or_else(|| {
-            WorldError::Habitat(HabitatError::HabitatNotFound {
-                habitat_id: target_habitat_id,
-            })
-        })?;
-
-        let hab_type = hab_catalog.get(&hab.type_id).ok_or_else(|| {
-            WorldError::Habitat(HabitatError::HabitatNotFound {
-                habitat_id: target_habitat_id,
-            })
-        })?;
-
-        // Aloca no habitat e no registro de criaturas
+        let hab = self.habitats.get_mut(&target_habitat_id).unwrap();
         hab.add_creature(&new_creature, hab_type, catalog)?;
-        self.bestiary.record_discovery(&new_creature.species_id, self.total_simulated_seconds as u64);
+
+        self.bestiary
+            .record_discovery(&new_creature.species_id, self.total_simulated_seconds as u64);
         self.creatures.insert(new_id, new_creature);
+        self.add_player_xp(40);
 
         Ok(new_id)
     }
@@ -429,13 +712,15 @@ impl SanctuaryWorld {
         milestone_catalog: &MilestoneCatalog,
         catalog: &SpeciesCatalog,
     ) -> Result<MilestoneReward, crate::bestiary::BestiaryError> {
-        self.bestiary.claim_milestone(
+        let reward = self.bestiary.claim_milestone(
             milestone_id,
             milestone_catalog,
             catalog,
             &mut self.gold,
             &mut self.food,
-        )
+        )?;
+        self.add_player_xp(50);
+        Ok(reward)
     }
 
     /// Serializa todo o estado do mundo para JSON (preparação de savegame).
@@ -591,5 +876,129 @@ mod tests {
         let loaded = SanctuaryWorld::from_json(&world.to_json().unwrap()).unwrap();
         assert_eq!(loaded.obstacles.len(), world.obstacles.len());
         assert!(loaded.island_grid.is_occupied(5, 8));
+    }
+
+    #[test]
+    fn test_habitat_upgrade_and_creature_relocation() {
+        let species_catalog = SpeciesCatalog::with_starter_species();
+        let hab_catalog = HabitatCatalog::with_default_habitats();
+        let mut world =
+            SanctuaryWorld::with_starter_setup("Evolucionista", &species_catalog, &hab_catalog)
+                .unwrap();
+
+        let starter_hab_id = *world.habitats.keys().next().unwrap();
+        let ignis_id = *world.creatures.keys().next().unwrap();
+
+        // Custo de upgrade do Tier 1 para Tier 2 é 1000 ouro; com 500 inicial deve falhar
+        assert_eq!(world.habitat_upgrade_cost(starter_hab_id, &hab_catalog), Some(1000));
+        assert!(matches!(
+            world.upgrade_habitat(starter_hab_id, &hab_catalog),
+            Err(WorldError::InsufficientGold { required: 1000, available: 500 })
+        ));
+
+        // Com saldo suficiente, sobe para Tier 2 (1000) e Tier 3 (5000)
+        world.gold = 7000;
+        let tier2 = world.upgrade_habitat(starter_hab_id, &hab_catalog).unwrap();
+        assert_eq!(tier2, 2);
+        assert_eq!(world.gold, 6000);
+
+        let tier3 = world.upgrade_habitat(starter_hab_id, &hab_catalog).unwrap();
+        assert_eq!(tier3, 3);
+        assert_eq!(world.gold, 1000);
+        assert_eq!(world.habitat_upgrade_cost(starter_hab_id, &hab_catalog), None);
+
+        // Tier 4 não existe -> MaxTierReached
+        assert!(matches!(
+            world.upgrade_habitat(starter_hab_id, &hab_catalog),
+            Err(WorldError::Habitat(HabitatError::MaxTierReached))
+        ));
+
+        // Constrói segundo Habitat de Fogo e um Habitat de Água
+        let fire_hab_2 = world
+            .build_habitat("fire_habitat", 6, 2, 300, &hab_catalog)
+            .unwrap();
+        let water_hab = world
+            .build_habitat("water_habitat", 6, 6, 300, &hab_catalog)
+            .unwrap();
+
+        // Tentar mover Ignis (Fogo) para Habitat de Água falha e mantém Ignis no habitat original
+        assert!(matches!(
+            world.relocate_creature(ignis_id, water_hab, &species_catalog, &hab_catalog),
+            Err(WorldError::Habitat(HabitatError::ElementNotSupported { .. }))
+        ));
+        assert_eq!(world.creatures[&ignis_id].habitat_id, Some(starter_hab_id));
+
+        // Mover Ignis para o segundo Habitat de Fogo funciona e atualiza ambos os habitats
+        world
+            .relocate_creature(ignis_id, fire_hab_2, &species_catalog, &hab_catalog)
+            .unwrap();
+        assert_eq!(world.creatures[&ignis_id].habitat_id, Some(fire_hab_2));
+        assert!(!world.habitats[&starter_hab_id].creature_ids.contains(&ignis_id));
+        assert!(world.habitats[&fire_hab_2].creature_ids.contains(&ignis_id));
+
+        // Renomear criatura
+        world.rename_creature(ignis_id, "  Chama Real  ").unwrap();
+        assert_eq!(
+            world.creatures[&ignis_id].nickname.as_deref(),
+            Some("Chama Real")
+        );
+        world.rename_creature(ignis_id, "   ").unwrap();
+        assert!(world.creatures[&ignis_id].nickname.is_none());
+    }
+
+    #[test]
+    fn test_egg_market_and_offline_progress() {
+        let species_catalog = SpeciesCatalog::with_starter_species();
+        let hab_catalog = HabitatCatalog::with_default_habitats();
+        let crop_catalog = CropCatalog::with_default_crops();
+        let mut world =
+            SanctuaryWorld::with_starter_setup("Mercador", &species_catalog, &hab_catalog).unwrap();
+
+        // Catálogo lista as 7 espécies mono-elementais para compra de ovo
+        let shop_eggs = species_catalog.shop_eggs_sorted();
+        assert_eq!(shop_eggs.len(), 7);
+
+        // Espécie híbrida não pode ser comprada na loja
+        assert!(matches!(
+            world.buy_egg("volcano_beast", &species_catalog),
+            Err(WorldError::SpeciesNotPurchasable(_))
+        ));
+
+        // Compra ovo de Golem Rochoso (Common = 150 ouro) -> permite ter o 2º progenitor!
+        let egg_id = world.buy_egg("stone_golem", &species_catalog).unwrap();
+        assert_eq!(world.gold, 350);
+        assert_eq!(world.hatchery.eggs.len(), 1);
+
+        // Vende um segundo ovo comprado
+        let egg2 = world.buy_egg("tide_serpent", &species_catalog).unwrap();
+        assert_eq!(world.gold, 200);
+        let sold_gold = world.sell_egg(egg2, &species_catalog).unwrap();
+        assert!(sold_gold > 0);
+        assert_eq!(world.gold, 200 + sold_gold);
+
+        // Constrói fazenda e planta cultura para testar progresso offline
+        let farm_id = world.build_farm(6, 2, FARM_BUILD_COST_GOLD).unwrap();
+        let wheat = crop_catalog.get("arcane_wheat").unwrap();
+        world.gold += 1000;
+        world.plant_crop(farm_id, wheat).unwrap();
+
+        // Simula 24h de ausência -> deve ser limitado a MAX_OFFLINE_SECONDS (8h = 28800s)
+        let report = world.apply_offline_progress(24.0 * 3600.0, &species_catalog, &hab_catalog);
+        assert_eq!(report.elapsed_applied_secs, MAX_OFFLINE_SECONDS);
+        assert!(report.gold_generated > 0);
+        assert_eq!(report.farms_matured, 1);
+        assert_eq!(report.eggs_ready, 1);
+
+        // Constrói habitat de Terra e choca o ovo de Golem Rochoso (verifica habitat_id atribuído)
+        let earth_hab = world
+            .build_habitat("earth_habitat", 6, 6, 300, &hab_catalog)
+            .unwrap();
+        let golem_id = world
+            .hatch_egg(egg_id, earth_hab, &species_catalog, &hab_catalog)
+            .unwrap();
+        assert_eq!(world.creatures[&golem_id].habitat_id, Some(earth_hab));
+
+        // Verifica que o XP do jogador acumulou e subiu de nível
+        assert!(world.player_level >= 2 || world.player_xp > 0);
     }
 }

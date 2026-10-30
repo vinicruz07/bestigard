@@ -1161,7 +1161,12 @@ impl GameState for BestigardGame {
         );
         self.font.draw_text(
             &mut self.batch,
-            "BESTIGARD SANCTUARY",
+            &format!(
+                "BESTIGARD SANCTUARY - NVL {} (XP {}/{})",
+                self.world.player_level,
+                self.world.player_xp,
+                self.world.player_xp_for_next_level()
+            ),
             40.0,
             104.0,
             1.8,
@@ -1353,6 +1358,7 @@ impl GameState for BestigardGame {
                                     let xp = arena.reward_xp;
                                     let cid = arena.player_creature_id;
                                     self.world.gold += gold;
+                                    self.world.add_player_xp(35);
                                     if let Some(creature) = self.world.creatures.get_mut(&cid) {
                                         creature.add_xp(xp);
                                     }
