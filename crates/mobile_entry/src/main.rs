@@ -2,10 +2,10 @@
 #![forbid(unsafe_code)]
 
 use engine::{
-    App, BitmapFont, Camera2D, Color, EngineConfig, GameState, InputManager,
-    IsometricProjection, MouseButton, PlacementCursor, Rect, RenderCommand, RenderLayer,
-    RenderQueue, SpriteBatch, TextureAtlas, TouchPhase, UiAction, UiButton, UiColor, UiManager,
-    UiModal, UiProgressBar,
+    App, AudioController, AudioEvent, BitmapFont, Camera2D, Color, EngineConfig, GameState,
+    InputManager, IsometricProjection, MouseButton, MusicPlaybackState, MusicTrack,
+    PlacementCursor, Rect, RenderCommand, RenderLayer, RenderQueue, SoundCue, SpriteBatch,
+    TextureAtlas, TouchPhase, UiAction, UiButton, UiColor, UiManager, UiModal, UiProgressBar,
 };
 use game_core::{
     BattleOutcome, BattleSession, Combatant, CropCatalog, ElementRegistry, ElementalChart,
@@ -63,6 +63,7 @@ pub struct BestigardGame {
     pub render_queue: RenderQueue,
     pub font: BitmapFont,
     pub ui: UiManager,
+    pub audio: AudioController,
     pub selected_creature_id: Option<u64>,
     pub selected_habitat_id: Option<u64>,
     pub selected_obstacle_id: Option<u64>,
@@ -100,6 +101,8 @@ impl BestigardGame {
         camera.set_position(center_world);
 
         let ui = UiManager::new(1080.0, 1920.0);
+        let mut audio = AudioController::new();
+        audio.play_music(MusicTrack::SanctuaryTheme, true);
 
         let mut game = Self {
             elements: ElementRegistry::with_default_elements(),
@@ -116,6 +119,7 @@ impl BestigardGame {
             render_queue: RenderQueue::new(),
             font: BitmapFont::default_font(),
             ui,
+            audio,
             selected_creature_id: None,
             selected_habitat_id: None,
             selected_obstacle_id: None,
@@ -1850,13 +1854,16 @@ impl GameState for BestigardGame {
                     handled_tap = true;
                     match id.as_str() {
                         "btn_open_shop" => {
+                            self.audio.play_sound(SoundCue::UiClick);
                             self.open_shop_modal();
                         }
                         "btn_shop_tab:buildings" => {
+                            self.audio.play_sound(SoundCue::UiClick);
                             self.shop_tab = ShopTab::Buildings;
                             self.open_shop_modal();
                         }
                         "btn_shop_tab:eggs" => {
+                            self.audio.play_sound(SoundCue::UiClick);
                             self.shop_tab = ShopTab::Eggs;
                             self.open_shop_modal();
                         }
@@ -1864,6 +1871,7 @@ impl GameState for BestigardGame {
                             let spec_id = &id["shop_buy_egg:".len()..];
                             match self.world.buy_egg(spec_id, &self.catalog) {
                                 Ok(egg_id) => {
+                                    self.audio.play_sound(SoundCue::EggDeposit);
                                     println!("Loja: Ovo #{} da espécie '{}' comprado e depositado no ninho!", egg_id, spec_id);
                                 }
                                 Err(e) => println!("Loja: Falha ao comprar ovo '{}': {}", spec_id, e),
@@ -1871,21 +1879,27 @@ impl GameState for BestigardGame {
                             self.open_shop_modal();
                         }
                         "shop_farm" => {
+                            self.audio.play_sound(SoundCue::UiClick);
                             self.ui.close_modal();
                             self.start_placement(BuildItem::Farm);
                             println!("Construção: modo de posicionamento iniciado (Fazenda).");
                         }
                         id if id.starts_with("shop_habitat:") => {
+                            self.audio.play_sound(SoundCue::UiClick);
                             let type_id = id["shop_habitat:".len()..].to_string();
                             self.ui.close_modal();
                             println!("Construção: modo de posicionamento iniciado ('{}').", type_id);
                             self.start_placement(BuildItem::Habitat(type_id));
                         }
                         "btn_placement_confirm" => match self.confirm_placement() {
-                            Ok(new_id) => println!("Construção: estrutura #{} construída com sucesso!", new_id),
+                            Ok(new_id) => {
+                                self.audio.play_sound(SoundCue::BuildingPlaced);
+                                println!("Construção: estrutura #{} construída com sucesso!", new_id);
+                            }
                             Err(e) => println!("Construção: não foi possível construir: {}", e),
                         },
                         "btn_placement_cancel" => {
+                            self.audio.play_sound(SoundCue::UiClick);
                             self.cancel_placement();
                             println!("Construção: modo de posicionamento cancelado.");
                         }
@@ -1893,6 +1907,7 @@ impl GameState for BestigardGame {
                             if let Some(oid) = self.selected_obstacle_id.take() {
                                 match self.world.clear_obstacle(oid) {
                                     Ok(cost) => {
+                                        self.audio.play_sound(SoundCue::ObstacleCleared);
                                         println!("Terreno: obstáculo #{} limpo por {} ouro.", oid, cost);
                                         self.ui.close_modal();
                                     }
@@ -1902,14 +1917,19 @@ impl GameState for BestigardGame {
                         }
                         "btn_collect_all" => {
                             let total = self.world.collect_all_gold();
+                            if total > 0 {
+                                self.audio.play_sound(SoundCue::GoldCollect);
+                            }
                             println!("UI: Coletado ouro de todos os habitats: +{} ouro!", total);
                         }
                         "btn_open_creature" => {
+                            self.audio.play_sound(SoundCue::UiClick);
                             if let Some(&first_id) = self.world.creatures.keys().next() {
                                 self.open_creature_modal(first_id);
                             }
                         }
                         id if id.starts_with("creature_nav:") => {
+                            self.audio.play_sound(SoundCue::UiClick);
                             if let Ok(cid) = id["creature_nav:".len()..].parse::<u64>() {
                                 self.open_creature_modal(cid);
                             }
@@ -1919,7 +1939,10 @@ impl GameState for BestigardGame {
                             if parts.len() == 2 {
                                 if let (Ok(cid), Ok(hid)) = (parts[0].parse::<u64>(), parts[1].parse::<u64>()) {
                                     match self.world.relocate_creature(cid, hid, &self.catalog, &self.habitats_catalog) {
-                                        Ok(_) => println!("UI: Criatura #{} transferida para o Habitat #{} com sucesso!", cid, hid),
+                                        Ok(_) => {
+                                            self.audio.play_sound(SoundCue::UiClick);
+                                            println!("UI: Criatura #{} transferida para o Habitat #{} com sucesso!", cid, hid);
+                                        }
                                         Err(e) => println!("UI: Falha ao transferir criatura #{}: {}", cid, e),
                                     }
                                     self.open_creature_modal(cid);
@@ -1927,9 +1950,11 @@ impl GameState for BestigardGame {
                             }
                         }
                         "btn_open_breeding" => {
+                            self.audio.play_sound(SoundCue::UiClick);
                             self.open_breeding_modal();
                         }
                         "btn_cycle_parent1" => {
+                            self.audio.play_sound(SoundCue::UiClick);
                             let mut eligible: Vec<u64> = self.world.creatures.iter().filter(|(_, c)| c.can_breed()).map(|(&id, _)| id).collect();
                             eligible.sort();
                             if eligible.len() >= 2 {
@@ -1944,6 +1969,7 @@ impl GameState for BestigardGame {
                             }
                         }
                         "btn_cycle_parent2" => {
+                            self.audio.play_sound(SoundCue::UiClick);
                             let mut eligible: Vec<u64> = self.world.creatures.iter().filter(|(_, c)| c.can_breed()).map(|(&id, _)| id).collect();
                             eligible.sort();
                             if eligible.len() >= 2 {
@@ -1961,6 +1987,11 @@ impl GameState for BestigardGame {
                             if let Some(cid) = self.selected_creature_id {
                                 match self.world.feed_creature(cid) {
                                     Ok(res) => {
+                                        if res.new_stage != res.previous_stage || res.new_level % 5 == 0 {
+                                            self.audio.play_sound(SoundCue::CreatureEvolve);
+                                        } else {
+                                            self.audio.play_sound(SoundCue::FeedCreature);
+                                        }
                                         println!(
                                             "UI: Criatura #{} alimentada! Novo nivel: {}, Estagio: {:?}",
                                             cid, res.new_level, res.new_stage
@@ -1986,6 +2017,7 @@ impl GameState for BestigardGame {
                                 let p2 = self.selected_parent2_id.unwrap_or(eligible[1]);
                                 match self.world.breed_creatures(p1, p2, &self.catalog, 9999) {
                                     Ok(res) => {
+                                        self.audio.play_sound(SoundCue::EggDeposit);
                                         println!(
                                             "UI: Cruzamento bem sucedido! Ovo da especie '{}' depositado no ninho!",
                                             res.offspring_species_id
@@ -2000,6 +2032,9 @@ impl GameState for BestigardGame {
                             if let Some(hid) = self.selected_habitat_id {
                                 match self.world.collect_habitat_gold(hid) {
                                     Ok(gold) => {
+                                        if gold > 0 {
+                                            self.audio.play_sound(SoundCue::GoldCollect);
+                                        }
                                         println!("UI: Coletado +{} ouro do Habitat #{}!", gold, hid);
                                         self.open_habitat_modal(hid);
                                     }
@@ -2010,13 +2045,17 @@ impl GameState for BestigardGame {
                         id if id.starts_with("btn_upgrade_hab_action:") => {
                             if let Ok(hid) = id["btn_upgrade_hab_action:".len()..].parse::<u64>() {
                                 match self.world.upgrade_habitat(hid, &self.habitats_catalog) {
-                                    Ok(new_tier) => println!("UI: Habitat #{} melhorado com sucesso para o Tier {}!", hid, new_tier),
+                                    Ok(new_tier) => {
+                                        self.audio.play_sound(SoundCue::BuildingPlaced);
+                                        println!("UI: Habitat #{} melhorado com sucesso para o Tier {}!", hid, new_tier);
+                                    }
                                     Err(e) => println!("UI: Falha ao melhorar habitat #{}: {}", hid, e),
                                 }
                                 self.open_habitat_modal(hid);
                             }
                         }
                         "btn_open_arena" => {
+                            self.audio.play_music(MusicTrack::ArenaBattleTheme, true);
                             self.start_arena_battle();
                         }
                         id if id.starts_with("arena_skill:") => {
@@ -2026,6 +2065,27 @@ impl GameState for BestigardGame {
                                     let (log1, log2) = arena
                                         .battle
                                         .execute_round(skill_idx, &self.elemental_chart);
+
+                                    // Disparo de efeitos sonoros e fanfarra de desfecho do combate
+                                    match arena.battle.outcome {
+                                        BattleOutcome::PlayerVictory => {
+                                            self.audio.play_music(MusicTrack::VictoryFanfare, false);
+                                            self.audio.play_sound(SoundCue::CombatVictory);
+                                        }
+                                        BattleOutcome::EnemyVictory | BattleOutcome::Draw => {
+                                            self.audio.play_sound(SoundCue::CombatDefeat);
+                                        }
+                                        BattleOutcome::Ongoing => {
+                                            if let Some(ref l1) = log1 {
+                                                if l1.elemental_multiplier > 1.0 {
+                                                    self.audio.play_sound(SoundCue::CombatSuperEffective);
+                                                } else {
+                                                    self.audio.play_sound(SoundCue::CombatAttackHit);
+                                                }
+                                            }
+                                        }
+                                    }
+
                                     let mut summary = String::new();
                                     if let Some(l1) = log1 {
                                         summary.push_str(&format!(
@@ -2054,6 +2114,7 @@ impl GameState for BestigardGame {
                             if let Some(ref mut arena) = self.arena {
                                 if !arena.rewards_claimed {
                                     arena.rewards_claimed = true;
+                                    self.audio.play_sound(SoundCue::MilestoneClaim);
                                     let gold = arena.reward_gold;
                                     let xp = arena.reward_xp;
                                     let cid = arena.player_creature_id;
@@ -2073,12 +2134,15 @@ impl GameState for BestigardGame {
                         "arena_close" => {
                             self.arena = None;
                             self.ui.close_modal();
+                            self.audio.play_music(MusicTrack::SanctuaryTheme, true);
                             println!("Arena: Batalha concluida. Retornando ao santuario.");
                         }
                         "btn_open_hatchery" => {
+                            self.audio.play_sound(SoundCue::UiClick);
                             self.open_hatchery_modal();
                         }
                         "btn_open_bestiary" => {
+                            self.audio.play_sound(SoundCue::UiClick);
                             self.open_bestiary_modal();
                         }
                         id if id.starts_with("plant_crop:") => {
@@ -2086,7 +2150,10 @@ impl GameState for BestigardGame {
                             if parts.len() == 2 {
                                 if let (Ok(farm_id), Some(crop)) = (parts[0].parse::<u64>(), self.crops_catalog.get(parts[1])) {
                                     match self.world.plant_crop(farm_id, crop) {
-                                        Ok(_) => println!("Fazenda #{}: plantado '{}'.", farm_id, crop.name),
+                                        Ok(_) => {
+                                            self.audio.play_sound(SoundCue::UiClick);
+                                            println!("Fazenda #{}: plantado '{}'.", farm_id, crop.name);
+                                        }
                                         Err(e) => println!("Fazenda #{}: falha ao plantar: {}", farm_id, e),
                                     }
                                     self.open_farm_modal(farm_id);
@@ -2096,7 +2163,10 @@ impl GameState for BestigardGame {
                         id if id.starts_with("harvest_farm:") => {
                             if let Ok(farm_id) = id["harvest_farm:".len()..].parse::<u64>() {
                                 match self.world.harvest_farm(farm_id) {
-                                    Ok(food) => println!("Fazenda #{}: colhido +{} comida!", farm_id, food),
+                                    Ok(food) => {
+                                        self.audio.play_sound(SoundCue::FoodHarvest);
+                                        println!("Fazenda #{}: colhido +{} comida!", farm_id, food);
+                                    }
                                     Err(e) => println!("Fazenda #{}: falha ao colher: {}", farm_id, e),
                                 }
                                 self.open_farm_modal(farm_id);
@@ -2119,7 +2189,10 @@ impl GameState for BestigardGame {
 
                                 if let Some(target_hid) = target_hab {
                                     match self.world.hatch_egg(egg_id, target_hid, &self.catalog, &self.habitats_catalog) {
-                                        Ok(cid) => println!("Ninho: Ovo #{} chocado com sucesso -> Nova criatura #{} no Habitat #{}!", egg_id, cid, target_hid),
+                                        Ok(cid) => {
+                                            self.audio.play_sound(SoundCue::EggHatch);
+                                            println!("Ninho: Ovo #{} chocado com sucesso -> Nova criatura #{} no Habitat #{}!", egg_id, cid, target_hid);
+                                        }
                                         Err(e) => println!("Ninho: Falha ao chocar ovo #{}: {}", egg_id, e),
                                     }
                                 } else {
@@ -2131,7 +2204,10 @@ impl GameState for BestigardGame {
                         id if id.starts_with("sell_egg:") => {
                             if let Ok(egg_id) = id["sell_egg:".len()..].parse::<u64>() {
                                 match self.world.sell_egg(egg_id, &self.catalog) {
-                                    Ok(gold) => println!("Ninho: Ovo #{} vendido por +{} ouro!", egg_id, gold),
+                                    Ok(gold) => {
+                                        self.audio.play_sound(SoundCue::GoldCollect);
+                                        println!("Ninho: Ovo #{} vendido por +{} ouro!", egg_id, gold);
+                                    }
                                     Err(e) => println!("Ninho: Falha ao vender ovo #{}: {}", egg_id, e),
                                 }
                                 self.open_hatchery_modal();
@@ -2140,7 +2216,10 @@ impl GameState for BestigardGame {
                         id if id.starts_with("claim_milestone:") => {
                             let m_id = &id["claim_milestone:".len()..];
                             match self.world.claim_milestone(m_id, &self.milestones_catalog, &self.catalog) {
-                                Ok(reward) => println!("Bestiário: Marco '{}' resgatado! +{} ouro, +{} comida.", m_id, reward.gold, reward.food),
+                                Ok(reward) => {
+                                    self.audio.play_sound(SoundCue::MilestoneClaim);
+                                    println!("Bestiário: Marco '{}' resgatado! +{} ouro, +{} comida.", m_id, reward.gold, reward.food);
+                                }
                                 Err(e) => println!("Bestiário: Erro ao resgatar marco '{}': {}", m_id, e),
                             }
                             self.open_bestiary_modal();
@@ -2682,4 +2761,50 @@ fn main() {
     state.ui.close_modal();
 
     println!("\n>> Seleção Completa, Upgrade de Habitat e Mercado de Ovos validados com 100% de sucesso! <<");
+
+    // 13. Demonstração e Verificação do Subsistema de Áudio (Passo 5.8)
+    println!("\n--- SUBSISTEMA DE ÁUDIO & SFX / BGM (PASSO 5.8) ---");
+    println!("1. Verificando estado inicial do mixer e trilha de fundo do Santuário...");
+    assert_eq!(state.audio.current_music(), Some(MusicTrack::SanctuaryTheme));
+    assert_eq!(state.audio.music_state(), MusicPlaybackState::Playing);
+    assert!(state.audio.is_music_looping());
+    println!("Trilha ativa: {:?} (Estado: {:?}, Volume BGM: {:.2})", state.audio.current_music().unwrap(), state.audio.music_state(), state.audio.effective_bgm_volume());
+
+    // Drena eventos gerados até aqui
+    let initial_audio_events = state.audio.drain_events();
+    println!("Eventos de áudio disparados nas ações anteriores: {} eventos capturados.", initial_audio_events.len());
+    assert!(initial_audio_events.iter().any(|e| matches!(e, AudioEvent::PlaySound { cue: SoundCue::BuildingPlaced, .. })));
+    assert!(initial_audio_events.iter().any(|e| matches!(e, AudioEvent::PlaySound { cue: SoundCue::EggDeposit, .. })));
+    assert!(initial_audio_events.iter().any(|e| matches!(e, AudioEvent::PlaySound { cue: SoundCue::UiClick, .. })));
+
+    println!("2. Testando disparos manuais de SFX com pitch modulado...");
+    state.audio.play_sound(SoundCue::GoldCollect);
+    state.audio.play_sound_with_pitch(SoundCue::FeedCreature, 1.25);
+    let sfx_events = state.audio.drain_events();
+    assert_eq!(sfx_events.len(), 2);
+    assert_eq!(sfx_events[0], AudioEvent::PlaySound { cue: SoundCue::GoldCollect, volume: 1.0, pitch: 1.0 });
+    assert_eq!(sfx_events[1], AudioEvent::PlaySound { cue: SoundCue::FeedCreature, volume: 1.0, pitch: 1.25 });
+    println!("Eventos SFX validados com sucesso!");
+
+    println!("3. Testando controle de volume e muting independente...");
+    state.audio.set_sfx_muted(true);
+    assert_eq!(state.audio.effective_sfx_volume(), 0.0);
+    state.audio.play_sound(SoundCue::UiClick);
+    let muted_events = state.audio.drain_events();
+    assert_eq!(muted_events[0], AudioEvent::PlaySound { cue: SoundCue::UiClick, volume: 0.0, pitch: 1.0 });
+    state.audio.set_sfx_muted(false);
+    assert_eq!(state.audio.effective_sfx_volume(), 1.0);
+
+    println!("4. Testando transição de BGM entre Santuário e Arena...");
+    state.audio.play_music(MusicTrack::ArenaBattleTheme, true);
+    assert_eq!(state.audio.current_music(), Some(MusicTrack::ArenaBattleTheme));
+    state.audio.play_music(MusicTrack::VictoryFanfare, false);
+    assert_eq!(state.audio.current_music(), Some(MusicTrack::VictoryFanfare));
+    state.audio.play_music(MusicTrack::SanctuaryTheme, true);
+    assert_eq!(state.audio.current_music(), Some(MusicTrack::SanctuaryTheme));
+    let bgm_events = state.audio.drain_events();
+    assert_eq!(bgm_events.len(), 3);
+    println!("Transições de BGM validadas com sucesso!");
+
+    println!("\n>> Subsistema de Áudio (Mixer, SFX Cues e BGM State Controller) validado com 100% de sucesso! <<");
 }

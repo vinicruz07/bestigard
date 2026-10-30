@@ -3,6 +3,7 @@
 
 pub mod app;
 pub mod atlas;
+pub mod audio;
 pub mod batch;
 pub mod camera;
 pub mod font;
@@ -18,6 +19,7 @@ pub mod ui;
 
 pub use app::{App, EngineConfig, GameState};
 pub use atlas::{AtlasRegion, TextureAtlas};
+pub use audio::{AudioController, AudioEvent, MusicPlaybackState, MusicTrack, SoundCue};
 pub use batch::{BatchStats, GpuSpritePipeline, SpriteBatch, Vertex2D};
 pub use camera::Camera2D;
 pub use font::{BitmapFont, Glyph};
