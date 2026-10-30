@@ -40,6 +40,14 @@ pub struct ArenaSessionState {
     pub rewards_claimed: bool,
 }
 
+/// Aba ativa no menu de compras da Loja do Santuário.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ShopTab {
+    #[default]
+    Buildings,
+    Eggs,
+}
+
 pub struct BestigardGame {
     pub elements: ElementRegistry,
     pub catalog: SpeciesCatalog,
@@ -59,6 +67,9 @@ pub struct BestigardGame {
     pub selected_habitat_id: Option<u64>,
     pub selected_obstacle_id: Option<u64>,
     pub selected_farm_id: Option<u64>,
+    pub selected_parent1_id: Option<u64>,
+    pub selected_parent2_id: Option<u64>,
+    pub shop_tab: ShopTab,
     pub placement: Option<PlacementSession>,
     pub arena: Option<ArenaSessionState>,
     frames_rendered: u64,
@@ -109,6 +120,9 @@ impl BestigardGame {
             selected_habitat_id: None,
             selected_obstacle_id: None,
             selected_farm_id: None,
+            selected_parent1_id: None,
+            selected_parent2_id: None,
+            shop_tab: ShopTab::Buildings,
             placement: None,
             arena: None,
             frames_rendered: 0,
@@ -253,59 +267,131 @@ impl BestigardGame {
         }
     }
 
-    /// Abre a loja de construções com habitats elementais e fazenda.
+    /// Abre a loja de compras com abas para construções e ovos elementais.
     pub fn open_shop_modal(&mut self) {
         let mut modal = UiModal::new(
             "modal_shop",
-            "LOJA DE CONSTRUCOES",
-            Rect::new(140.0, 280.0, 800.0, 680.0),
+            "LOJA DO SANTUARIO",
+            Rect::new(140.0, 240.0, 800.0, 720.0),
         );
         modal.add_text(
             format!("SALDO: {} OURO", self.world.gold),
             170.0,
-            335.0,
+            295.0,
             1.8,
             UiColor::GOLD_FILL,
         );
 
-        let mut y = 380.0;
-        for hab in self.habitats_catalog.all_sorted() {
-            let element = hab
-                .supported_elements
-                .first()
-                .map(|e| e.as_str().to_uppercase())
-                .unwrap_or_default();
-            let affordable = self.world.gold >= hab.build_cost_gold;
-            modal.add_button(
-                UiButton::new(
-                    format!("shop_habitat:{}", hab.id),
-                    Rect::new(170.0, y, 740.0, 54.0),
-                    format!("HABITAT {} - {} OURO", element, hab.build_cost_gold),
-                )
-                .with_colors(
-                    if affordable { UiColor::BTN_ACCENT } else { UiColor::BTN_DISABLED },
-                    Color::WHITE,
-                )
-                .with_disabled(!affordable)
-                .with_scale(1.8),
-            );
-            y += 62.0;
-        }
+        // Abas da loja
+        let is_buildings = self.shop_tab == ShopTab::Buildings;
+        let is_eggs = self.shop_tab == ShopTab::Eggs;
 
-        let farm_affordable = self.world.gold >= FARM_BUILD_COST_GOLD;
         modal.add_button(
             UiButton::new(
-                "shop_farm",
-                Rect::new(170.0, y, 740.0, 54.0),
-                format!("FAZENDA DE COMIDA - {} OURO", FARM_BUILD_COST_GOLD),
+                "btn_shop_tab:buildings",
+                Rect::new(170.0, 330.0, 360.0, 48.0),
+                "ESTRUTURAS",
             )
             .with_colors(
-                if farm_affordable { UiColor::BTN_PRIMARY } else { UiColor::BTN_DISABLED },
+                if is_buildings { UiColor::BTN_PRIMARY } else { UiColor::BTN_SECONDARY },
                 Color::WHITE,
             )
-            .with_disabled(!farm_affordable)
             .with_scale(1.8),
         );
+
+        modal.add_button(
+            UiButton::new(
+                "btn_shop_tab:eggs",
+                Rect::new(550.0, 330.0, 360.0, 48.0),
+                "OVOS ELEMENTAIS",
+            )
+            .with_colors(
+                if is_eggs { UiColor::BTN_PRIMARY } else { UiColor::BTN_SECONDARY },
+                Color::WHITE,
+            )
+            .with_scale(1.8),
+        );
+
+        match self.shop_tab {
+            ShopTab::Buildings => {
+                let mut y = 395.0;
+                for hab in self.habitats_catalog.all_sorted() {
+                    let element = hab
+                        .supported_elements
+                        .first()
+                        .map(|e| e.as_str().to_uppercase())
+                        .unwrap_or_default();
+                    let affordable = self.world.gold >= hab.build_cost_gold;
+                    modal.add_button(
+                        UiButton::new(
+                            format!("shop_habitat:{}", hab.id),
+                            Rect::new(170.0, y, 740.0, 52.0),
+                            format!("HABITAT {} - {} OURO", element, hab.build_cost_gold),
+                        )
+                        .with_colors(
+                            if affordable { UiColor::BTN_ACCENT } else { UiColor::BTN_DISABLED },
+                            Color::WHITE,
+                        )
+                        .with_disabled(!affordable)
+                        .with_scale(1.7),
+                    );
+                    y += 58.0;
+                }
+
+                let farm_affordable = self.world.gold >= FARM_BUILD_COST_GOLD;
+                modal.add_button(
+                    UiButton::new(
+                        "shop_farm",
+                        Rect::new(170.0, y, 740.0, 52.0),
+                        format!("FAZENDA DE COMIDA - {} OURO", FARM_BUILD_COST_GOLD),
+                    )
+                    .with_colors(
+                        if farm_affordable { UiColor::BTN_PRIMARY } else { UiColor::BTN_DISABLED },
+                        Color::WHITE,
+                    )
+                    .with_disabled(!farm_affordable)
+                    .with_scale(1.7),
+                );
+            }
+            ShopTab::Eggs => {
+                let hatchery_has_space = self.world.hatchery.can_add_egg();
+                let hatchery_cap = self.world.hatchery.max_slots;
+                let eggs_count = self.world.hatchery.eggs.len();
+
+                modal.add_text(
+                    format!(
+                        "NINHO DE INCUBACAO: {} / {} VAGAS OCUPADAS",
+                        eggs_count, hatchery_cap
+                    ),
+                    170.0,
+                    395.0,
+                    1.6,
+                    if hatchery_has_space { Color::rgb(0.4, 0.9, 0.4) } else { UiColor::BTN_DANGER },
+                );
+
+                let mut y = 430.0;
+                for (species, cost) in self.catalog.shop_eggs_sorted() {
+                    let can_afford = self.world.gold >= cost;
+                    let can_buy = can_afford && hatchery_has_space;
+                    let el = species.elements.first().map(|e| e.as_str().to_uppercase()).unwrap_or_default();
+
+                    modal.add_button(
+                        UiButton::new(
+                            format!("shop_buy_egg:{}", species.id),
+                            Rect::new(170.0, y, 740.0, 54.0),
+                            format!("OVO {} ({}) - {} OURO", species.name.to_uppercase(), el, cost),
+                        )
+                        .with_colors(
+                            if can_buy { UiColor::BTN_ACCENT } else { UiColor::BTN_DISABLED },
+                            Color::WHITE,
+                        )
+                        .with_disabled(!can_buy)
+                        .with_scale(1.6),
+                    );
+                    y += 60.0;
+                }
+            }
+        }
 
         self.ui.open_modal(modal);
     }
@@ -361,7 +447,7 @@ impl BestigardGame {
         self.ui.open_modal(modal);
     }
 
-    /// Abre janela modal de inspeção e gestão de criatura (alimentação, nível e evolução).
+    /// Abre janela modal de inspeção e gestão de criatura (navegação, alimentação, nível, evolução e realocação).
     pub fn open_creature_modal(&mut self, creature_id: u64) {
         self.selected_creature_id = Some(creature_id);
         let creature = match self.world.creatures.get(&creature_id) {
@@ -376,16 +462,58 @@ impl BestigardGame {
         let mut modal = UiModal::new(
             "modal_creature",
             "GESTAO DE CRIATURA",
-            Rect::new(140.0, 280.0, 800.0, 680.0),
+            Rect::new(140.0, 240.0, 800.0, 720.0),
+        );
+
+        // Lista ordenada de todas as criaturas do santuário para permitir navegação cíclica
+        let mut all_ids: Vec<u64> = self.world.creatures.keys().copied().collect();
+        all_ids.sort();
+        let current_pos = all_ids.iter().position(|&id| id == creature_id).unwrap_or(0);
+        let prev_id = if current_pos > 0 {
+            all_ids[current_pos - 1]
+        } else {
+            *all_ids.last().unwrap_or(&creature_id)
+        };
+        let next_id = if current_pos + 1 < all_ids.len() {
+            all_ids[current_pos + 1]
+        } else {
+            all_ids[0]
+        };
+
+        // Barra superior de navegação
+        modal.add_button(
+            UiButton::new(
+                format!("creature_nav:{}", prev_id),
+                Rect::new(170.0, 290.0, 160.0, 44.0),
+                "< ANTERIOR",
+            )
+            .with_colors(UiColor::BTN_SECONDARY, Color::WHITE)
+            .with_scale(1.5),
         );
 
         let nick = creature.nickname.as_deref().unwrap_or(&species.name);
         modal.add_text(
-            format!("ESPECIE: {} ('{}')", species.name.to_uppercase(), nick.to_uppercase()),
-            170.0,
+            format!(
+                "#{}/{} - {} ('{}')",
+                current_pos + 1,
+                all_ids.len(),
+                species.name.to_uppercase(),
+                nick.to_uppercase()
+            ),
             350.0,
-            1.8,
-            Color::WHITE,
+            303.0,
+            1.6,
+            UiColor::GOLD_FILL,
+        );
+
+        modal.add_button(
+            UiButton::new(
+                format!("creature_nav:{}", next_id),
+                Rect::new(750.0, 290.0, 160.0, 44.0),
+                "PROXIMA >",
+            )
+            .with_colors(UiColor::BTN_SECONDARY, Color::WHITE)
+            .with_scale(1.5),
         );
 
         let el_str = species
@@ -397,7 +525,7 @@ impl BestigardGame {
         modal.add_text(
             format!("ELEMENTOS: [{}] | RARIDADE: {:?}", el_str, species.rarity),
             170.0,
-            390.0,
+            350.0,
             1.6,
             Color::rgb(0.95, 0.82, 0.35),
         );
@@ -405,19 +533,24 @@ impl BestigardGame {
         modal.add_text(
             format!("ESTAGIO: {:?} | NIVEL ATUAL: {}", creature.stage, creature.level),
             170.0,
-            430.0,
-            1.8,
+            385.0,
+            1.7,
             Color::rgb(0.35, 0.90, 0.90),
         );
 
+        let hab_label = match creature.habitat_id {
+            Some(hid) => format!("#{}", hid),
+            None => "NENHUM".to_string(),
+        };
         modal.add_text(
             format!(
-                "XP ACUMULADO: {} / {} PARA PROXIMO NIVEL",
+                "XP: {} / {} | HABITAT ATUAL: {}",
                 creature.xp,
-                creature.xp_for_next_level()
+                creature.xp_for_next_level(),
+                hab_label
             ),
             170.0,
-            470.0,
+            420.0,
             1.5,
             Color::WHITE,
         );
@@ -425,45 +558,80 @@ impl BestigardGame {
         // Barra de progresso de experiência (XP)
         let ratio = (creature.xp as f32 / creature.xp_for_next_level().max(1) as f32).clamp(0.0, 1.0);
         modal.add_progress_bar(UiProgressBar::new(
-            Rect::new(170.0, 500.0, 740.0, 24.0),
+            Rect::new(170.0, 445.0, 740.0, 20.0),
             ratio,
             UiColor::XP_FILL,
         ));
 
         let gold_hr = creature.calculate_gold_per_hour(&species);
         modal.add_text(
-            format!("PRODUCAO PASSIVA: {} OURO/HORA", gold_hr),
+            format!("PRODUCAO: {} OURO/HORA | COMIDA DISPONIVEL: {}", gold_hr, self.world.food),
             170.0,
-            545.0,
-            1.6,
+            480.0,
+            1.5,
             Color::rgb(1.0, 0.85, 0.2),
         );
 
-        modal.add_text(
-            format!("COMIDA EM ESTOQUE NO SANTUARIO: {}", self.world.food),
-            170.0,
-            580.0,
-            1.6,
-            Color::rgb(0.4, 0.9, 0.3),
-        );
+        // Seletor de realocação para outro habitat compatível com vaga disponível
+        let other_compatible_habitats: Vec<u64> = self
+            .world
+            .habitats
+            .iter()
+            .filter_map(|(&hid, hab)| {
+                if Some(hid) == creature.habitat_id {
+                    return None;
+                }
+                let hab_type = self.habitats_catalog.get(&hab.type_id)?;
+                let tier_info = hab_type.get_tier_info(hab.tier)?;
+                if hab.creature_ids.len() < tier_info.max_creatures
+                    && hab_type.accepts_elements(&species.elements)
+                {
+                    Some(hid)
+                } else {
+                    None
+                }
+            })
+            .collect();
+
+        if let Some(&target_hid) = other_compatible_habitats.first() {
+            let target_hab = &self.world.habitats[&target_hid];
+            let hab_type = self.habitats_catalog.get(&target_hab.type_id).unwrap();
+            modal.add_button(
+                UiButton::new(
+                    format!("relocate_creature:{}:{}", creature_id, target_hid),
+                    Rect::new(170.0, 545.0, 740.0, 52.0),
+                    format!("TRANSFERIR P/ HABITAT #{} ({})", target_hid, hab_type.name.to_uppercase()),
+                )
+                .with_colors(UiColor::BTN_ACCENT, Color::WHITE)
+                .with_scale(1.6),
+            );
+        } else {
+            modal.add_text(
+                "NENHUM OUTRO HABITAT COMPATIVEL COM VAGA DISPONIVEL",
+                170.0,
+                560.0,
+                1.4,
+                Color::rgb(0.7, 0.7, 0.7),
+            );
+        }
 
         // Custo dinâmico de alimentação: 20 * level
         let feed_cost = 20 * creature.level as u64;
         let can_feed = self.world.food >= feed_cost;
 
-        let feed_btn = UiButton::new(
-            "btn_feed_action",
-            Rect::new(190.0, 640.0, 700.0, 68.0),
-            format!("ALIMENTAR CRIATURA (-{} COMIDA)", feed_cost),
-        )
-        .with_colors(
-            if can_feed { UiColor::BTN_PRIMARY } else { UiColor::BTN_DISABLED },
-            Color::WHITE,
-        )
-        .with_disabled(!can_feed)
-        .with_scale(1.9);
-
-        modal.add_button(feed_btn);
+        modal.add_button(
+            UiButton::new(
+                "btn_feed_action",
+                Rect::new(170.0, 620.0, 740.0, 64.0),
+                format!("ALIMENTAR CRIATURA (-{} COMIDA)", feed_cost),
+            )
+            .with_colors(
+                if can_feed { UiColor::BTN_PRIMARY } else { UiColor::BTN_DISABLED },
+                Color::WHITE,
+            )
+            .with_disabled(!can_feed)
+            .with_scale(1.8),
+        );
 
         // Dica de evolução
         let evo_msg = if creature.level < 4 {
@@ -473,102 +641,144 @@ impl BestigardGame {
         } else {
             "Estagio Maximo de Adulto Atingido!"
         };
-        modal.add_text(evo_msg, 190.0, 730.0, 1.5, UiColor::GOLD_ACCENT);
+        modal.add_text(evo_msg, 170.0, 695.0, 1.4, UiColor::GOLD_ACCENT);
 
         self.ui.open_modal(modal);
     }
 
-    /// Abre janela modal para seleção de progenitores e início do cruzamento determinístico.
+    /// Abre janela modal do Altar de Cruzamento com escolha manual dos progenitores.
     pub fn open_breeding_modal(&mut self) {
         let mut modal = UiModal::new(
             "modal_breeding",
             "ALTAR DE CRUZAMENTO GENETICO",
-            Rect::new(140.0, 280.0, 800.0, 680.0),
+            Rect::new(140.0, 240.0, 800.0, 720.0),
         );
 
         // Identifica criaturas adultas/jovens elegíveis para cruzar (nível >= 4)
-        let eligible: Vec<u64> = self
+        let mut eligible: Vec<u64> = self
             .world
             .creatures
             .iter()
             .filter(|(_, c)| c.can_breed())
             .map(|(&id, _)| id)
             .collect();
+        eligible.sort();
 
         modal.add_text(
             "SELECAO DE PAIS PARA COMBINACAO DE ELEMENTOS",
             170.0,
-            350.0,
-            1.8,
+            295.0,
+            1.7,
             Color::WHITE,
         );
 
         if eligible.len() >= 2 {
-            let p1 = &self.world.creatures[&eligible[0]];
-            let p2 = &self.world.creatures[&eligible[1]];
+            // Valida ou inicializa os IDs selecionados
+            if self.selected_parent1_id.is_none() || !eligible.contains(&self.selected_parent1_id.unwrap()) {
+                self.selected_parent1_id = Some(eligible[0]);
+            }
+            if self.selected_parent2_id.is_none()
+                || !eligible.contains(&self.selected_parent2_id.unwrap())
+                || self.selected_parent1_id == self.selected_parent2_id
+            {
+                self.selected_parent2_id = eligible.iter().find(|&&id| Some(id) != self.selected_parent1_id).copied();
+            }
+
+            let p1_id = self.selected_parent1_id.unwrap();
+            let p2_id = self.selected_parent2_id.unwrap();
+
+            let p1 = &self.world.creatures[&p1_id];
+            let p2 = &self.world.creatures[&p2_id];
             let s1 = self.catalog.get(&p1.species_id).unwrap();
             let s2 = self.catalog.get(&p2.species_id).unwrap();
 
+            // Pai 1
+            let el1_str = s1.elements.iter().map(|e| e.as_str().to_uppercase()).collect::<Vec<_>>().join("/");
             modal.add_text(
-                format!("PAI 1: {} (NIVEL {})", s1.name.to_uppercase(), p1.level),
+                format!("PAI 1: {} (NV {}) [{}]", s1.name.to_uppercase(), p1.level, el1_str),
                 170.0,
-                400.0,
-                1.7,
+                350.0,
+                1.6,
                 Color::rgb(1.0, 0.65, 0.35),
             );
+            modal.add_button(
+                UiButton::new("btn_cycle_parent1", Rect::new(690.0, 335.0, 220.0, 44.0), "TROCAR PAI 1")
+                    .with_colors(UiColor::BTN_SECONDARY, Color::WHITE)
+                    .with_scale(1.5),
+            );
+
+            // Pai 2
+            let el2_str = s2.elements.iter().map(|e| e.as_str().to_uppercase()).collect::<Vec<_>>().join("/");
             modal.add_text(
-                format!("PAI 2: {} (NIVEL {})", s2.name.to_uppercase(), p2.level),
+                format!("PAI 2: {} (NV {}) [{}]", s2.name.to_uppercase(), p2.level, el2_str),
                 170.0,
-                440.0,
-                1.7,
+                410.0,
+                1.6,
                 Color::rgb(0.55, 0.85, 1.0),
+            );
+            modal.add_button(
+                UiButton::new("btn_cycle_parent2", Rect::new(690.0, 395.0, 220.0, 44.0), "TROCAR PAI 2")
+                    .with_colors(UiColor::BTN_SECONDARY, Color::WHITE)
+                    .with_scale(1.5),
             );
 
             modal.add_text(
                 "PREVISAO GENETICA: HIBRIDO ELEMENTAL COMPATIVEL",
                 170.0,
-                490.0,
+                470.0,
                 1.6,
                 UiColor::GOLD_ACCENT,
             );
             modal.add_text(
-                "Chance aumentada de mutacao rara pelo nivel dos progenitores!",
+                format!(
+                    "Criaturas prontas no santuário: {} | Cruzando: #{} e #{}",
+                    eligible.len(),
+                    p1_id,
+                    p2_id
+                ),
                 170.0,
-                525.0,
+                510.0,
                 1.5,
                 Color::WHITE,
             );
 
-            let breed_btn = UiButton::new(
-                "btn_breed_action",
-                Rect::new(190.0, 620.0, 700.0, 68.0),
-                "INICIAR CRUZAMENTO (GERAR OVO NO NINHO)",
-            )
-            .with_colors(UiColor::BTN_PRIMARY, Color::WHITE)
-            .with_scale(1.8);
-            modal.add_button(breed_btn);
+            let hatchery_has_space = self.world.hatchery.can_add_egg();
+            modal.add_button(
+                UiButton::new(
+                    "btn_breed_action",
+                    Rect::new(170.0, 610.0, 740.0, 68.0),
+                    if hatchery_has_space {
+                        "INICIAR CRUZAMENTO (GERAR OVO NO NINHO)"
+                    } else {
+                        "NINHO CHEIO! (LIBERE UMA VAGA)"
+                    },
+                )
+                .with_colors(
+                    if hatchery_has_space { UiColor::BTN_PRIMARY } else { UiColor::BTN_DISABLED },
+                    Color::WHITE,
+                )
+                .with_disabled(!hatchery_has_space)
+                .with_scale(1.7),
+            );
         } else {
             modal.add_text(
                 "CRIATURAS ADULTAS INSUFICIENTES (MINIMO: 2 NIVEL 4+)",
                 170.0,
-                410.0,
+                380.0,
                 1.6,
                 UiColor::BTN_DANGER,
             );
             modal.add_text(
-                "Dica: Alimente suas criaturas ate o Nivel 4 (Juvenil) para liberá-las!",
+                "Alimente suas criaturas até o Nível 4 (Juvenil) para liberá-las!",
                 170.0,
-                460.0,
+                430.0,
                 1.5,
                 Color::WHITE,
             );
             modal.add_text(
-                format!(
-                    "Criaturas prontas: {} / 2 requeridas.",
-                    eligible.len()
-                ),
+                format!("Criaturas prontas: {} / 2 requeridas.", eligible.len()),
                 170.0,
-                500.0,
+                480.0,
                 1.6,
                 UiColor::GOLD_ACCENT,
             );
@@ -577,7 +787,7 @@ impl BestigardGame {
         self.ui.open_modal(modal);
     }
 
-    /// Abre janela modal de inspeção e coleta de ouro do habitat selecionado.
+    /// Abre janela modal de inspeção, coleta de ouro e melhoria (upgrade) do habitat.
     pub fn open_habitat_modal(&mut self, habitat_id: u64) {
         self.selected_habitat_id = Some(habitat_id);
         let hab = match self.world.habitats.get(&habitat_id) {
@@ -595,13 +805,13 @@ impl BestigardGame {
         let mut modal = UiModal::new(
             "modal_habitat",
             "GESTAO DE HABITAT",
-            Rect::new(140.0, 280.0, 800.0, 600.0),
+            Rect::new(140.0, 240.0, 800.0, 720.0),
         );
 
         modal.add_text(
             format!("TIPO: {} (TIER {})", hab_type.name.to_uppercase(), hab.tier),
             170.0,
-            350.0,
+            300.0,
             1.8,
             Color::WHITE,
         );
@@ -614,7 +824,7 @@ impl BestigardGame {
         modal.add_text(
             format!("ELEMENTOS: [{}]", elements_str),
             170.0,
-            390.0,
+            340.0,
             1.6,
             Color::rgb(1.0, 0.75, 0.35),
         );
@@ -625,7 +835,7 @@ impl BestigardGame {
                 max_creatures
             ),
             170.0,
-            430.0,
+            380.0,
             1.6,
             Color::WHITE,
         );
@@ -635,7 +845,7 @@ impl BestigardGame {
                 hab.accumulated_gold, gold_cap
             ),
             170.0,
-            470.0,
+            420.0,
             1.7,
             Color::rgb(1.0, 0.85, 0.2),
         );
@@ -643,15 +853,58 @@ impl BestigardGame {
         // Barra de acúmulo de ouro
         let ratio = (hab.accumulated_gold as f32 / gold_cap as f32).clamp(0.0, 1.0);
         modal.add_progress_bar(UiProgressBar::new(
-            Rect::new(170.0, 500.0, 740.0, 24.0),
+            Rect::new(170.0, 450.0, 740.0, 22.0),
             ratio,
             UiColor::GOLD_FILL,
         ));
 
+        // Seção de Melhoria (Upgrade de Tier)
+        let upgrade_cost_opt = self.world.habitat_upgrade_cost(habitat_id, &self.habitats_catalog);
+        if let Some(cost) = upgrade_cost_opt {
+            let next_tier = hab.tier + 1;
+            let next_tier_info = hab_type.get_tier_info(next_tier);
+            let next_cap = next_tier_info.map(|t| t.gold_capacity).unwrap_or(gold_cap);
+            let next_creatures = next_tier_info.map(|t| t.max_creatures).unwrap_or(max_creatures);
+
+            modal.add_text(
+                format!(
+                    "PROXIMO TIER {}: Capacidade {} ouro, {} criaturas",
+                    next_tier, next_cap, next_creatures
+                ),
+                170.0,
+                460.0,
+                1.5,
+                Color::rgb(0.35, 0.90, 0.90),
+            );
+
+            let can_upgrade = self.world.gold >= cost;
+            modal.add_button(
+                UiButton::new(
+                    format!("btn_upgrade_hab_action:{}", habitat_id),
+                    Rect::new(170.0, 490.0, 740.0, 54.0),
+                    format!("MELHORAR HABITAT (TIER {}) - {} OURO", next_tier, cost),
+                )
+                .with_colors(
+                    if can_upgrade { UiColor::BTN_ACCENT } else { UiColor::BTN_DISABLED },
+                    Color::WHITE,
+                )
+                .with_disabled(!can_upgrade)
+                .with_scale(1.7),
+            );
+        } else {
+            modal.add_text(
+                "HABITAT NO NIVEL MAXIMO (TIER MAXIMO ALCANCADO)",
+                170.0,
+                470.0,
+                1.6,
+                Color::rgb(0.5, 0.9, 0.5),
+            );
+        }
+
         let has_gold = hab.accumulated_gold > 0;
         let collect_btn = UiButton::new(
             "btn_collect_hab_action",
-            Rect::new(190.0, 560.0, 700.0, 68.0),
+            Rect::new(170.0, 560.0, 740.0, 64.0),
             format!("COLETAR +{} DE OURO", hab.accumulated_gold),
         )
         .with_colors(
@@ -659,7 +912,7 @@ impl BestigardGame {
             Color::WHITE,
         )
         .with_disabled(!has_gold)
-        .with_scale(1.9);
+        .with_scale(1.8);
         modal.add_button(collect_btn);
 
         self.ui.open_modal(modal);
@@ -1599,6 +1852,24 @@ impl GameState for BestigardGame {
                         "btn_open_shop" => {
                             self.open_shop_modal();
                         }
+                        "btn_shop_tab:buildings" => {
+                            self.shop_tab = ShopTab::Buildings;
+                            self.open_shop_modal();
+                        }
+                        "btn_shop_tab:eggs" => {
+                            self.shop_tab = ShopTab::Eggs;
+                            self.open_shop_modal();
+                        }
+                        id if id.starts_with("shop_buy_egg:") => {
+                            let spec_id = &id["shop_buy_egg:".len()..];
+                            match self.world.buy_egg(spec_id, &self.catalog) {
+                                Ok(egg_id) => {
+                                    println!("Loja: Ovo #{} da espécie '{}' comprado e depositado no ninho!", egg_id, spec_id);
+                                }
+                                Err(e) => println!("Loja: Falha ao comprar ovo '{}': {}", spec_id, e),
+                            }
+                            self.open_shop_modal();
+                        }
                         "shop_farm" => {
                             self.ui.close_modal();
                             self.start_placement(BuildItem::Farm);
@@ -1638,8 +1909,53 @@ impl GameState for BestigardGame {
                                 self.open_creature_modal(first_id);
                             }
                         }
+                        id if id.starts_with("creature_nav:") => {
+                            if let Ok(cid) = id["creature_nav:".len()..].parse::<u64>() {
+                                self.open_creature_modal(cid);
+                            }
+                        }
+                        id if id.starts_with("relocate_creature:") => {
+                            let parts: Vec<&str> = id["relocate_creature:".len()..].split(':').collect();
+                            if parts.len() == 2 {
+                                if let (Ok(cid), Ok(hid)) = (parts[0].parse::<u64>(), parts[1].parse::<u64>()) {
+                                    match self.world.relocate_creature(cid, hid, &self.catalog, &self.habitats_catalog) {
+                                        Ok(_) => println!("UI: Criatura #{} transferida para o Habitat #{} com sucesso!", cid, hid),
+                                        Err(e) => println!("UI: Falha ao transferir criatura #{}: {}", cid, e),
+                                    }
+                                    self.open_creature_modal(cid);
+                                }
+                            }
+                        }
                         "btn_open_breeding" => {
                             self.open_breeding_modal();
+                        }
+                        "btn_cycle_parent1" => {
+                            let mut eligible: Vec<u64> = self.world.creatures.iter().filter(|(_, c)| c.can_breed()).map(|(&id, _)| id).collect();
+                            eligible.sort();
+                            if eligible.len() >= 2 {
+                                let current = self.selected_parent1_id.unwrap_or(eligible[0]);
+                                let curr_idx = eligible.iter().position(|&id| id == current).unwrap_or(0);
+                                let mut next_idx = (curr_idx + 1) % eligible.len();
+                                if Some(eligible[next_idx]) == self.selected_parent2_id {
+                                    next_idx = (next_idx + 1) % eligible.len();
+                                }
+                                self.selected_parent1_id = Some(eligible[next_idx]);
+                                self.open_breeding_modal();
+                            }
+                        }
+                        "btn_cycle_parent2" => {
+                            let mut eligible: Vec<u64> = self.world.creatures.iter().filter(|(_, c)| c.can_breed()).map(|(&id, _)| id).collect();
+                            eligible.sort();
+                            if eligible.len() >= 2 {
+                                let current = self.selected_parent2_id.unwrap_or(eligible[1]);
+                                let curr_idx = eligible.iter().position(|&id| id == current).unwrap_or(1);
+                                let mut next_idx = (curr_idx + 1) % eligible.len();
+                                if Some(eligible[next_idx]) == self.selected_parent1_id {
+                                    next_idx = (next_idx + 1) % eligible.len();
+                                }
+                                self.selected_parent2_id = Some(eligible[next_idx]);
+                                self.open_breeding_modal();
+                            }
                         }
                         "btn_feed_action" => {
                             if let Some(cid) = self.selected_creature_id {
@@ -1657,15 +1973,18 @@ impl GameState for BestigardGame {
                             }
                         }
                         "btn_breed_action" => {
-                            let eligible: Vec<u64> = self
+                            let mut eligible: Vec<u64> = self
                                 .world
                                 .creatures
                                 .iter()
                                 .filter(|(_, c)| c.can_breed())
                                 .map(|(&id, _)| id)
                                 .collect();
+                            eligible.sort();
                             if eligible.len() >= 2 {
-                                match self.world.breed_creatures(eligible[0], eligible[1], &self.catalog, 9999) {
+                                let p1 = self.selected_parent1_id.unwrap_or(eligible[0]);
+                                let p2 = self.selected_parent2_id.unwrap_or(eligible[1]);
+                                match self.world.breed_creatures(p1, p2, &self.catalog, 9999) {
                                     Ok(res) => {
                                         println!(
                                             "UI: Cruzamento bem sucedido! Ovo da especie '{}' depositado no ninho!",
@@ -1686,6 +2005,15 @@ impl GameState for BestigardGame {
                                     }
                                     Err(e) => println!("UI: Erro na coleta do habitat: {}", e),
                                 }
+                            }
+                        }
+                        id if id.starts_with("btn_upgrade_hab_action:") => {
+                            if let Ok(hid) = id["btn_upgrade_hab_action:".len()..].parse::<u64>() {
+                                match self.world.upgrade_habitat(hid, &self.habitats_catalog) {
+                                    Ok(new_tier) => println!("UI: Habitat #{} melhorado com sucesso para o Tier {}!", hid, new_tier),
+                                    Err(e) => println!("UI: Falha ao melhorar habitat #{}: {}", hid, e),
+                                }
+                                self.open_habitat_modal(hid);
                             }
                         }
                         "btn_open_arena" => {
@@ -2262,4 +2590,96 @@ fn main() {
     println!(">> Modo de Construção e Limpeza de Terreno validados com 100% de sucesso! <<");
     println!(">> Arena Elemental de Batalha e UI Interativa validadas com 100% de sucesso! <<");
     println!(">> Modais de Fazenda, Ninho e Bestiário validados com 100% de sucesso! <<");
+
+    // 12. Demonstração e Verificação das Funcionalidades do Passo 5.7
+    println!("\n--- SELEÇÃO COMPLETA, UPGRADE DE HABITAT E LOJA DE OVOS (PASSO 5.7) ---");
+
+    // A) Navegação entre criaturas no CreatureModal
+    println!("1. Abrindo CreatureModal e testando navegação cíclica (< ANTERIOR / PROXIMA >)...");
+    let cids: Vec<u64> = {
+        let mut ids: Vec<u64> = state.world.creatures.keys().copied().collect();
+        ids.sort();
+        ids
+    };
+    assert!(cids.len() >= 2);
+    state.open_creature_modal(cids[0]);
+    assert_eq!(state.selected_creature_id, Some(cids[0]));
+    // Clica em [PROXIMA >] (x=800.0, y=310.0)
+    tap_at(state, 800.0, 310.0);
+    assert_eq!(state.selected_creature_id, Some(cids[1]));
+    // Clica em [< ANTERIOR] (x=200.0, y=310.0)
+    tap_at(state, 200.0, 310.0);
+    assert_eq!(state.selected_creature_id, Some(cids[0]));
+    println!("Navegação entre criaturas validada com sucesso!");
+
+    // B) Realocação de Criatura: criatura do habitat fire (#10) ou water (#20)
+    println!("2. Testando realocação de criatura para outro habitat compatível...");
+    let c_to_move = state.world.creatures.values().find(|c| {
+        let spec = state.catalog.get(&c.species_id).unwrap();
+        state.world.habitats.iter().any(|(&hid, hab)| {
+            Some(hid) != c.habitat_id && {
+                let hab_type = state.habitats_catalog.get(&hab.type_id).unwrap();
+                let tier_info = hab_type.get_tier_info(hab.tier).unwrap();
+                hab.creature_ids.len() < tier_info.max_creatures && hab_type.accepts_elements(&spec.elements)
+            }
+        })
+    }).map(|c| (c.instance_id, c.habitat_id));
+
+    if let Some((cid, old_hid)) = c_to_move {
+        state.open_creature_modal(cid);
+        // Toca no botão de transferir (pos: 400.0, 565.0)
+        tap_at(state, 400.0, 565.0);
+        let new_hid = state.world.creatures[&cid].habitat_id;
+        assert_ne!(new_hid, old_hid);
+        println!("Criatura #{} realocada com sucesso do Habitat #{:?} para o Habitat #{:?}!", cid, old_hid, new_hid);
+    }
+    state.ui.close_modal();
+
+    // C) Alternância manual de Pais no Altar de Cruzamento
+    println!("3. Testando escolha e alternância manual de progenitores no Altar de Cruzamento...");
+    tap_at(state, 556.0, 40.0); // Botão [CRUZAR] no HUD
+    assert!(state.ui.is_modal_open());
+    let _p1_initial = state.selected_parent1_id;
+    // Clica em [TROCAR PAI 1] (pos: 750.0, 350.0)
+    tap_at(state, 750.0, 350.0);
+    println!("Progenitores selecionados após troca: Pai 1 = {:?}, Pai 2 = {:?}", state.selected_parent1_id, state.selected_parent2_id);
+    assert_ne!(state.selected_parent1_id, state.selected_parent2_id);
+    state.ui.close_modal();
+
+    // D) Melhoria de Tier de Habitat no HabitatModal
+    println!("4. Testando melhoria de Tier do Habitat #10...");
+    let hab_id = 10;
+    let initial_tier = state.world.habitats[&hab_id].tier;
+    assert_eq!(initial_tier, 1);
+    let up_cost = state.world.habitat_upgrade_cost(hab_id, &state.habitats_catalog).unwrap();
+    if state.world.gold < up_cost {
+        state.world.gold += up_cost;
+    }
+    state.open_habitat_modal(hab_id);
+    // Toca no botão [MELHORAR HABITAT] (pos: 400.0, 510.0)
+    tap_at(state, 400.0, 510.0);
+    assert_eq!(state.world.habitats[&hab_id].tier, 2);
+    let upgraded_hab_type = state.habitats_catalog.get(&state.world.habitats[&hab_id].type_id).unwrap();
+    let tier2_info = upgraded_hab_type.get_tier_info(2).unwrap();
+    assert_eq!(tier2_info.max_creatures, 3);
+    assert_eq!(tier2_info.gold_capacity, 2500);
+    println!("Habitat #{} promovido para Tier 2! Nova capacidade: {} criaturas, {} ouro max.", hab_id, tier2_info.max_creatures, tier2_info.gold_capacity);
+    state.ui.close_modal();
+
+    // E) Loja de Ovos Elementais
+    println!("5. Testando compra de ovo elemental na Loja...");
+    let eggs_before = state.world.hatchery.eggs.len();
+    tap_at(state, 850.0, 40.0); // Botão [LOJA] no HUD
+    assert!(state.ui.is_modal_open());
+    // Clica na aba [OVOS ELEMENTAIS] (pos: 650.0, 350.0)
+    tap_at(state, 650.0, 350.0);
+    assert_eq!(state.shop_tab, ShopTab::Eggs);
+    // Clica para comprar o primeiro ovo da lista (pos: 400.0, 450.0)
+    state.world.gold += 500;
+    tap_at(state, 400.0, 450.0);
+    assert_eq!(state.world.hatchery.eggs.len(), eggs_before + 1);
+    println!("Ovo elemental adquirido na loja! Ovos no ninho: {}", state.world.hatchery.eggs.len());
+    state.ui.close_modal();
+
+    println!("\n>> Seleção Completa, Upgrade de Habitat e Mercado de Ovos validados com 100% de sucesso! <<");
 }

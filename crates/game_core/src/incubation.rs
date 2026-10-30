@@ -150,6 +150,11 @@ impl HatcheryInstance {
         }
     }
 
+    /// Retorna se há pelo menos um slot livre no ninho para novo ovo.
+    pub fn can_add_egg(&self) -> bool {
+        self.eggs.len() < self.max_slots
+    }
+
     /// Adiciona um novo ovo ao ninho caso haja slot disponível.
     pub fn add_egg(&mut self, species: &CreatureSpecies) -> Result<u64, HatcheryError> {
         if self.eggs.len() >= self.max_slots {
