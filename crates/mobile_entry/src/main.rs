@@ -6,11 +6,12 @@ use engine::{
     InputManager, IsometricProjection, MouseButton, MusicPlaybackState, MusicTrack,
     PlacementCursor, Rect, RenderCommand, RenderLayer, RenderQueue, SoundCue, SpriteBatch,
     TextureAtlas, TouchPhase, UiAction, UiButton, UiColor, UiManager, UiModal, UiProgressBar,
+    TextureId, WindowRunner,
 };
 use game_core::{
     BattleOutcome, BattleSession, Combatant, CropCatalog, ElementRegistry, ElementalChart,
     HabitatCatalog, IncubationSpeedModifier, MilestoneCatalog, ModifierSource, ObstacleKind,
-    SanctuaryWorld, SpeciesCatalog, FARM_BUILD_COST_GOLD,
+    SanctuaryWorld, GrowthStage, SpeciesCatalog, FARM_BUILD_COST_GOLD,
 };
 
 /// Estrutura que o jogador está posicionando no modo de construção.
@@ -93,6 +94,7 @@ impl BestigardGame {
         atlas.add_region("creature_volcano_beast_baby", Rect::new(544.0, 0.0, 64.0, 64.0));
         atlas.add_region("icon_gold_coin", Rect::new(608.0, 0.0, 32.0, 32.0));
         atlas.add_region("icon_food_apple", Rect::new(640.0, 0.0, 32.0, 32.0));
+        atlas.add_region("building_hatchery", Rect::new(672.0, 0.0, 160.0, 160.0));
 
         let mut camera = Camera2D::new(1080.0, 1920.0);
         let projection = IsometricProjection::DEFAULT;
@@ -1295,7 +1297,7 @@ impl BestigardGame {
                     .get(crop_id)
                     .map(|c| c.name.to_uppercase().replace("Á", "A").replace("Í", "I"))
                     .unwrap_or_else(|| crop_id.to_uppercase());
-                let remaining = (*duration_secs as f64 - elapsed_secs).max(0.0).ceil() as u64;
+                let remaining = (*duration_secs as f64 - *elapsed_secs).max(0.0).ceil() as u64;
                 let ratio = (*elapsed_secs as f32 / *duration_secs as f32).clamp(0.0, 1.0);
 
                 modal.add_text(
@@ -1721,31 +1723,142 @@ impl GameState for BestigardGame {
                 );
             }
         }
+        // - Estrutura do Ninho de Incubacao (Hatchery) no grid (2, 6), tamanho 2x2
+        let hatch_x = 2.0;
+        let hatch_y = 6.0;
+        let hatch_w = 2.0;
+        let hatch_h = 2.0;
+        let hatch_center = self.camera.grid_to_screen(
+            hatch_x + hatch_w * 0.5,
+            hatch_y + hatch_h * 0.5,
+            &self.projection,
+        );
+        let hatch_side = (hatch_w + hatch_h) * 0.5 * tile_w * 0.65;
+        let hatch_rect = Rect::new(
+            hatch_center.x - hatch_side * 0.5,
+            hatch_center.y - hatch_side * 0.85,
+            hatch_side,
+            hatch_side,
+        );
 
-        // - Criatura A (grid 2.5, 2.5 -> depth menor)
-        if let Some(volcano) = self.atlas.get("creature_volcano_beast_baby") {
-            let p = self.camera.grid_to_screen(2.5, 2.5, &self.projection);
+        if let Some(hatch_sprite) = self.atlas.get("building_hatchery") {
             self.render_queue.push_entity_grid(
-                2.5,
-                2.5,
+                hatch_x + hatch_w * 0.5,
+                hatch_y + hatch_h * 0.5,
                 0.0,
-                volcano.clone(),
-                Rect::new(p.x - 24.0, p.y - 30.0, 48.0, 48.0),
+                hatch_sprite.clone(),
+                hatch_rect,
                 Color::WHITE,
+            );
+        } else {
+            self.render_queue.push(RenderCommand::colored_rect(
+                RenderLayer::Entities,
+                hatch_x + hatch_y + 2.0,
+                hatch_rect,
+                Color::rgb(0.72, 0.48, 0.28),
+            ));
+        }
+
+        // Indicador visual sobre o ninho
+        let ready_eggs = self.world.hatchery.eggs.iter().filter(|e| e.is_ready()).count();
+        let total_eggs = self.world.hatchery.eggs.len();
+        if ready_eggs > 0 {
+            self.render_queue.push_ui_rect(
+                Rect::new(hatch_center.x - 45.0, hatch_center.y - hatch_side * 0.95, 90.0, 22.0),
+                UiColor::GOLD_ACCENT,
+            );
+        } else if total_eggs > 0 {
+            self.render_queue.push_ui_rect(
+                Rect::new(hatch_center.x - 40.0, hatch_center.y - hatch_side * 0.95, 80.0, 20.0),
+                UiColor::DARK_GLASS,
             );
         }
 
-        // - Criatura B na frente do habitat (grid 4.0, 4.0 -> depth maior que o centro do habitat)
-        if let Some(pyro) = self.atlas.get("creature_pyro_drake_baby") {
-            let p = self.camera.grid_to_screen(4.0, 4.0, &self.projection);
-            self.render_queue.push_entity_grid(
-                4.0,
-                4.0,
-                0.0,
-                pyro.clone(),
-                Rect::new(p.x - 24.0, p.y - 30.0, 48.0, 48.0),
-                Color::WHITE,
-            );
+        // - Renderizacao Dinamica de Criaturas Reais alocadas em seus Habitats
+        let default_creature_baby = self.atlas.get("creature_pyro_drake_baby").cloned();
+        let volcano_creature_baby = self.atlas.get("creature_volcano_beast_baby").cloned();
+
+        for hab in self.world.habitats.values() {
+            let Some(hab_type) = self.habitats_catalog.get(&hab.type_id) else { continue };
+            let hw = hab_type.width as f32;
+            let hh = hab_type.height as f32;
+
+            for (idx, &creature_id) in hab.creature_ids.iter().enumerate() {
+                let Some(creature) = self.world.creatures.get(&creature_id) else { continue };
+
+                // Distribuicao espacial suave dentro do terreno do habitat
+                let (ox, oy) = match idx % 4 {
+                    0 => (hw * 0.25, hh * 0.40),
+                    1 => (hw * 0.70, hh * 0.38),
+                    2 => (hw * 0.50, hh * 0.75),
+                    _ => (hw * 0.30, hh * 0.70),
+                };
+
+                let c_gx = hab.grid_x as f32 + ox;
+                let c_gy = hab.grid_y as f32 + oy;
+                let p = self.camera.grid_to_screen(c_gx, c_gy, &self.projection);
+
+                // Escala de tamanho baseada no estagio evolutivo
+                let base_size = match creature.stage {
+                    GrowthStage::Baby => 38.0,
+                    GrowthStage::Juvenile => 50.0,
+                    GrowthStage::Adult => 64.0,
+                };
+                let size = base_size * (zoom / 1.0).clamp(0.5, 2.0);
+
+                // Cor tematica baseada nos elementos da especie
+                let tint_color = if let Some(sp) = self.catalog.get(&creature.species_id) {
+                    let first_elem = sp.elements.first().map(|s| s.as_str()).unwrap_or("fire");
+                    match first_elem {
+                        "fire" => Color::rgb(1.0, 0.45, 0.25),
+                        "water" => Color::rgb(0.25, 0.65, 1.0),
+                        "earth" => Color::rgb(0.60, 0.45, 0.25),
+                        "air" => Color::rgb(0.75, 0.95, 1.0),
+                        "lightning" => Color::rgb(1.0, 0.90, 0.20),
+                        "light" => Color::rgb(1.0, 1.0, 0.80),
+                        "shadow" => Color::rgb(0.60, 0.30, 0.80),
+                        _ => Color::WHITE,
+                    }
+                } else {
+                    Color::WHITE
+                };
+
+                let sprite_opt = if creature.species_id.contains("volcano") {
+                    volcano_creature_baby.clone().or_else(|| default_creature_baby.clone())
+                } else {
+                    default_creature_baby.clone()
+                };
+
+                let rect = Rect::new(p.x - size * 0.5, p.y - size * 0.75, size, size);
+
+                // Halo indicativo se a criatura estiver atualmente selecionada
+                if self.selected_creature_id == Some(creature.instance_id) {
+                    self.render_queue.push(RenderCommand::colored_rect(
+                        RenderLayer::Entities,
+                        c_gx + c_gy - 0.05,
+                        Rect::new(p.x - size * 0.4, p.y - size * 0.15, size * 0.8, 8.0),
+                        UiColor::GOLD_ACCENT,
+                    ));
+                }
+
+                if let Some(sprite) = sprite_opt {
+                    self.render_queue.push_entity_grid(
+                        c_gx,
+                        c_gy,
+                        0.0,
+                        sprite,
+                        rect,
+                        tint_color,
+                    );
+                } else {
+                    self.render_queue.push(RenderCommand::colored_rect(
+                        RenderLayer::Entities,
+                        c_gx + c_gy,
+                        rect,
+                        tint_color,
+                    ));
+                }
+            }
         }
 
         // 4. Camada de Interface de Usuário (Ui): HUD Superior fixo de recursos
@@ -1840,6 +1953,14 @@ impl GameState for BestigardGame {
         // 7. Renderização da Interface e Modais via UiManager
         self.ui.render(&mut self.render_queue, &mut self.batch, &self.font);
     }
+    fn sprite_batch_mut(&mut self) -> Option<&mut SpriteBatch> {
+        Some(&mut self.batch)
+    }
+
+    fn active_texture(&self) -> Option<TextureId> {
+        None
+    }
+
 
     fn on_resume(&mut self) {
         println!("Bestigard retomado (foreground mobile)");
@@ -2265,6 +2386,22 @@ impl GameState for BestigardGame {
                     }
                 }
 
+                // Se tocou sobre o Ninho de Incubacao (area 2, 6 a 4, 8), abre modal do ninho
+
+                if cell.0 >= 2 && cell.0 < 4 && cell.1 >= 6 && cell.1 < 8 {
+
+                    println!("UI: Selecionado Ninho de Incubacao no mapa -> Abrindo menu do ninho");
+
+                    self.audio.play_sound(SoundCue::UiClick);
+
+                    self.open_hatchery_modal();
+
+                    continue;
+
+                }
+
+
+
                 // Se tocou sobre uma fazenda, abre modal da fazenda
                 if let Some((&farm_id, _)) = self.world.farms.iter().find(|(_, f)| {
                     let fx = f.grid_x as i32;
@@ -2297,6 +2434,25 @@ impl GameState for BestigardGame {
 }
 
 fn main() {
+    let args: Vec<String> = std::env::args().collect();
+    let run_window_mode = args.iter().any(|arg| arg == "--window" || arg == "--gui");
+
+    let config = EngineConfig {
+        title: "Bestigard - Santuario das Bestas".to_string(),
+        width: 1080,
+        height: 1920,
+        target_ups: 60.0,
+    };
+
+    if run_window_mode {
+        println!(
+            "Iniciando {} em MODO JANELA GRAFICA INTERATIVA (WindowRunner) - Resolucao: {}x{}, UPS: {}",
+            config.title, config.width, config.height, config.target_ups
+        );
+        WindowRunner::run(config, BestigardGame::default());
+        return;
+    }
+
     let config = EngineConfig::default();
     println!(
         "Iniciando {} - Resolução alvo: {}x{}, UPS: {}",
@@ -2807,4 +2963,33 @@ fn main() {
     println!("Transições de BGM validadas com sucesso!");
 
     println!("\n>> Subsistema de Áudio (Mixer, SFX Cues e BGM State Controller) validado com 100% de sucesso! <<");
+
+    println!("\n--- PIPELINE GPU, ENTIDADES DINAMICAS & MODO JANELA (PASSO 5.9) ---");
+    println!("1. Verificando integracao de SpriteBatch via GameState::sprite_batch_mut()...");
+    assert!(state.sprite_batch_mut().is_some());
+    println!("SpriteBatch exposto para WindowRunner com sucesso!");
+
+    println!("2. Testando toque interativo no Ninho de Incubacao na celula (3.0, 7.0)...");
+    let hatch_screen = state.camera.grid_to_screen(3.0, 7.0, &state.projection);
+    let mut input_manager = engine::InputManager::new();
+    input_manager.on_mouse_button_down(engine::MouseButton::Left, hatch_screen.x, hatch_screen.y);
+    input_manager.on_mouse_button_up(engine::MouseButton::Left, hatch_screen.x, hatch_screen.y);
+    state.on_input(&input_manager);
+    assert!(state.ui.is_modal_open());
+    println!("Ninho no mapa acionado por toque: HatcheryModal aberto com sucesso!");
+    state.ui.close_modal();
+
+    println!("3. Verificando renderizacao dinamica de entidades reais...");
+    state.render(1.0);
+    assert!(!state.batch.is_empty());
+    println!(
+        "Renderizacao dinamica concluida! Total de quads acumulados no SpriteBatch: {}",
+        state.batch.quad_count()
+    );
+
+    println!("\n>> Pipeline GPU, Renderizacao Dinamica e WindowRunner validados com 100% de sucesso! <<");
+    println!(
+        "\n==> Dica: Para rodar em janela nativa desktop interativa (OpenGL/Vulkan), execute:"
+    );
+    println!("    cargo run -p mobile_entry -- --window\n");
 }

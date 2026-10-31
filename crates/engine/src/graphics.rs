@@ -2,6 +2,7 @@
 #![forbid(unsafe_code)]
 
 use crate::app::{App, EngineConfig, GameState};
+use crate::batch::GpuSpritePipeline;
 use crate::input::InputManager;
 use miniquad::conf::Conf;
 use miniquad::{EventHandler, MouseButton, PassAction, RenderingBackend, TouchPhase};
@@ -124,6 +125,7 @@ pub struct WindowRunner<S: GameState> {
     pub app: App<S>,
     pub gfx: GraphicsContext,
     pub input: InputManager,
+    pub gpu_pipeline: Option<GpuSpritePipeline>,
     backend: Box<dyn RenderingBackend>,
     last_frame_time: f64,
 }
@@ -134,13 +136,15 @@ impl<S: GameState + 'static> WindowRunner<S> {
         let height = config.height as f32;
         let app = App::new(config, state);
         let gfx = GraphicsContext::new(width, height);
-        let backend = miniquad::window::new_rendering_backend();
+        let mut backend = miniquad::window::new_rendering_backend();
+        let gpu_pipeline = GpuSpritePipeline::new(&mut backend, 4096).ok();
         let input = InputManager::new();
 
         Self {
             app,
             gfx,
             input,
+            gpu_pipeline,
             backend,
             last_frame_time: miniquad::date::now(),
         }
@@ -179,7 +183,25 @@ impl<S: GameState> EventHandler for WindowRunner<S> {
 
     fn draw(&mut self) {
         // Limpa a tela com o clear_color configurado
+        // 1. Limpa a tela com o clear_color configurado
         self.gfx.clear(&mut self.backend);
+
+        // 2. Garante inicialização segura do pipeline de sprites GPU
+        if self.gpu_pipeline.is_none() {
+            self.gpu_pipeline = GpuSpritePipeline::new(&mut self.backend, 4096).ok();
+        }
+
+        // 3. Submete o SpriteBatch acumulado pelo jogo à GPU
+        if let Some(pipeline) = &mut self.gpu_pipeline {
+            let width = self.gfx.viewport.width;
+            let height = self.gfx.viewport.height;
+            let texture = self.app.state().active_texture();
+            if let Some(batch) = self.app.state_mut().sprite_batch_mut() {
+                if !batch.is_empty() {
+                    pipeline.flush(&mut self.backend, batch, texture, width, height);
+                }
+            }
+        }
     }
 
     fn resize_event(&mut self, width: f32, height: f32) {

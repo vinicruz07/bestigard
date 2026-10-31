@@ -27,6 +27,7 @@ pub use geometry::{Point, Rect};
 pub use graphics::{Color, GraphicsContext, Viewport, WindowRunner};
 pub use input::{ActiveTouch, InputEvent, InputManager};
 pub use miniquad::{MouseButton, TouchPhase};
+pub use miniquad::graphics::TextureId;
 pub use isometric::IsometricProjection;
 pub use placement::{polygon_strips, PlacementCursor, PLACEMENT_INVALID_COLOR, PLACEMENT_VALID_COLOR};
 pub use render::{RenderCommand, RenderLayer, RenderQueue};

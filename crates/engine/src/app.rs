@@ -1,7 +1,9 @@
 //! Abstração de aplicação e ciclo de vida multiplataforma.
 #![forbid(unsafe_code)]
 
+use crate::batch::SpriteBatch;
 use crate::time::TimeStep;
+use miniquad::graphics::TextureId;
 
 /// Trait que define o ciclo de vida de um jogo em Bestigard.
 pub trait GameState {
@@ -16,6 +18,16 @@ pub trait GameState {
 
     /// Renderização do estado atual, recebendo o fator alpha para interpolação entre ticks fixos.
     fn render(&mut self, _alpha: f32) {}
+
+    /// Fornece acesso mutável ao SpriteBatch gerado no frame para envio à GPU.
+    fn sprite_batch_mut(&mut self) -> Option<&mut SpriteBatch> {
+        None
+    }
+
+    /// Textura ativa vinculada ao SpriteBatch (opcional, usa textura branca padrão se None).
+    fn active_texture(&self) -> Option<TextureId> {
+        None
+    }
 
     /// Disparado quando o jogo perde foco ou é minimizado (ciclo de vida Android/iOS).
     fn on_pause(&mut self) {}
