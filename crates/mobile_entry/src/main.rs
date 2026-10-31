@@ -2889,7 +2889,10 @@ impl GameState for BestigardGame {
 
 fn main() {
     let args: Vec<String> = std::env::args().collect();
-    let run_window_mode = cfg!(target_os = "android") || args.iter().any(|arg| arg == "--window" || arg == "--gui");
+    let force_cli = args.iter().any(|arg| arg == "--cli" || arg == "--test-suite");
+    let force_window = args.iter().any(|arg| arg == "--window" || arg == "--gui");
+    let is_cargo_run = std::env::var_os("CARGO").is_some();
+    let run_window_mode = cfg!(target_os = "android") || force_window || (!force_cli && !is_cargo_run);
 
     let config = EngineConfig {
         title: "Bestigard - Santuario das Bestas".to_string(),

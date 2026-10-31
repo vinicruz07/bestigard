@@ -1,0 +1,162 @@
+name: Release Bestigard (Windows .exe & Android .apk)
+
+on:
+  push:
+    branches:
+      - main
+    tags:
+      - "v*"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build-windows:
+    name: Build Windows Desktop (.exe)
+    runs-on: windows-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install Rust stable toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Cargo registry and target
+        uses: Swatinem/rust-cache@v2
+
+      - name: Run unit tests (game_core & engine)
+        run: cargo test --workspace
+
+      - name: Run CLI integration verification suite
+        run: cargo run -p mobile_entry -- --cli
+
+      - name: Build optimized Windows Release binary (.exe)
+        run: cargo build --release -p mobile_entry
+
+      - name: Stage Windows Release executable
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path dist | Out-Null
+          Copy-Item "target/release/mobile_entry.exe" "dist/bestigard-v0.0.0.1-windows-x64.exe"
+          Get-Item "dist/bestigard-v0.0.0.1-windows-x64.exe" | Select-Object Name, Length
+
+      - name: Upload Windows .exe Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-release-exe
+          path: dist/bestigard-v0.0.0.1-windows-x64.exe
+          if-no-files-found: error
+
+  build-android:
+    name: Build Android Mobile (.apk)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Prepare Android crate metadata for cargo-quad-apk
+        run: |
+          cat > crates/mobile_entry/Cargo.toml << 'EOF'
+          [package]
+          name = "mobile_entry"
+          version.workspace = true
+          edition.workspace = true
+          license.workspace = true
+
+          [dependencies]
+          game_core = { path = "../game_core" }
+          engine = { path = "../engine" }
+
+          [package.metadata.android]
+          package_name = "com.bestigard.game"
+          label = "Bestigard - Santuario das Bestas"
+          assets = "../../assets"
+          res = "../../platform/android/res"
+          android_version = 29
+          target_sdk_version = 29
+          min_sdk_version = 24
+          build_targets = ["aarch64-linux-android", "armv7-linux-androideabi"]
+
+          [package.metadata.android.activity_attributes]
+          "android:screenOrientation" = "portrait"
+          "android:exported" = "true"
+          EOF
+
+      - name: Build Android APK via notfl3/cargo-apk Docker image
+        run: |
+          docker run --rm \
+            -v "${{ github.workspace }}:/root/src" \
+            -w /root/src \
+            notfl3/cargo-apk \
+            bash -c '
+              set -e
+              rustup update stable
+              rustup default stable
+              rustup target add aarch64-linux-android armv7-linux-androideabi
+              rm -f Cargo.lock
+              cargo quad-apk build -p mobile_entry --release || (cd crates/mobile_entry && cargo quad-apk build --release)
+            '
+
+      - name: Stage Android Release APK
+        run: |
+          mkdir -p dist
+          APK_PATH=$(find target crates -name "*.apk" | head -n 1)
+          echo "Found APK at: $APK_PATH"
+          cp "$APK_PATH" dist/bestigard-v0.0.0.1-android.apk
+          ls -lh dist/bestigard-v0.0.0.1-android.apk
+
+      - name: Upload Android .apk Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: android-release-apk
+          path: dist/bestigard-v0.0.0.1-android.apk
+          if-no-files-found: error
+
+  publish-release:
+    name: Publish GitHub Release v0.0.0.1
+    needs: [build-windows, build-android]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download Windows .exe Artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: windows-release-exe
+          path: release-assets
+
+      - name: Download Android .apk Artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: android-release-apk
+          path: release-assets
+
+      - name: List Release Assets
+        run: ls -lh release-assets/
+
+      - name: Create or Update GitHub Release v0.0.0.1
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ startsWith(github.ref, 'refs/tags/') && github.ref_name || 'v0.0.0.1' }}
+          name: "Bestigard v0.0.0.1 - Santuário das Bestas (Windows .exe + Android .apk)"
+          prerelease: false
+          draft: false
+          files: |
+            release-assets/bestigard-v0.0.0.1-windows-x64.exe
+            release-assets/bestigard-v0.0.0.1-android.apk
+          body: |
+            ## 🐉 Bestigard — Santuário das Bestas (`v0.0.0.1`)
+
+            Primeira release jogável completa (Fases 1 a 6 concluídas em 100% Safe Rust)!
+
+            ### 📦 Arquivos para Download (abaixo em *Assets*):
+            1. **🖥️ Windows Desktop (`.exe`)**: `bestigard-v0.0.0.1-windows-x64.exe`
+               - Basta baixar e dar **duplo-clique** para abrir a janela gráfica interativa do jogo no Windows (não requer instalação).
+            2. **📱 Android Mobile (`.apk`)**: `bestigard-v0.0.0.1-android.apk`
+               - Baixe no seu celular Android (`ARM64` / `ARMv7`) e toque no arquivo para instalar o aplicativo **Bestigard - Santuário das Bestas**.
+
+            ### ✨ Recursos Incluídos na `v0.0.0.1`:
+            - Mapa isométrico interativo com habitats elementais, fazendas de comida e Ninho de Incubação (*Hatchery*).
+            - Cruzamento genético determinístico (*Breeding*) e evolução de criaturas com sprites procedurais.
+            - Arena de Combate Elemental 3v3 em turnos com multiplicadores elementais e recompensas.
+            - Áudio procedural em tempo real (BGM de santuário, tema de batalha, fanfarra de vitória e 14 efeitos sonoros).
+            - Salvamento automático atômico (`.json` + `.bak`) e cálculo de recompensas offline (*Welcome Back Modal*).

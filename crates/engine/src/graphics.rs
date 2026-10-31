@@ -152,17 +152,37 @@ impl<S: GameState + 'static> WindowRunner<S> {
 
     /// Inicia o backend de janela e o loop gráfico com a configuração fornecida.
     pub fn run(config: EngineConfig, state: S) {
+        let (phys_w, phys_h) = if cfg!(not(target_os = "android")) && config.height > 1000 {
+            ((config.width / 2) as i32, (config.height / 2) as i32)
+        } else {
+            (config.width as i32, config.height as i32)
+        };
         let conf = Conf {
             window_title: config.title.clone(),
-            window_width: config.width as i32,
-            window_height: config.height as i32,
+            window_width: phys_w,
+            window_height: phys_h,
             high_dpi: true,
             fullscreen: false,
             sample_count: 1,
             ..Default::default()
         };
 
-        miniquad::start(conf, move || Box::new(WindowRunner::new(config, state)));
+        miniquad::start(conf, move || {
+            let mut runner = WindowRunner::new(config, state);
+            runner.gfx.resize(phys_w as f32, phys_h as f32);
+            Box::new(runner)
+        });
+    }
+}
+
+impl<S: GameState> WindowRunner<S> {
+    #[inline]
+    fn to_logical_coords(&self, x: f32, y: f32) -> (f32, f32) {
+        let vw = self.gfx.viewport.width.max(1.0);
+        let vh = self.gfx.viewport.height.max(1.0);
+        let lw = self.app.config().width as f32;
+        let lh = self.app.config().height as f32;
+        (x * lw / vw, y * lh / vh)
     }
 }
 
@@ -179,7 +199,6 @@ impl<S: GameState> EventHandler for WindowRunner<S> {
 
         // Avança simulação e lógica com delta time real
         // Avança simulação e lógica com delta time real
-        self.app.step(raw_dt);
         self.app.step(raw_dt);
         self.app.state_mut().step_audio_driver(raw_dt);
         if let Some(fullscreen) = self.app.state_mut().take_fullscreen_request() {
@@ -207,8 +226,8 @@ impl<S: GameState> EventHandler for WindowRunner<S> {
 
         // 4. Submete o SpriteBatch acumulado pelo jogo à GPU
         if let Some(pipeline) = &mut self.gpu_pipeline {
-            let width = self.gfx.viewport.width;
-            let height = self.gfx.viewport.height;
+            let width = self.app.config().width as f32;
+            let height = self.app.config().height as f32;
             let texture = self.app.state().active_texture();
             if let Some(batch) = self.app.state_mut().sprite_batch_mut() {
                 if !batch.is_empty() {
@@ -223,7 +242,8 @@ impl<S: GameState> EventHandler for WindowRunner<S> {
     }
 
     fn mouse_motion_event(&mut self, x: f32, y: f32) {
-        self.input.on_mouse_motion(x, y);
+        let (lx, ly) = self.to_logical_coords(x, y);
+        self.input.on_mouse_motion(lx, ly);
     }
 
     fn mouse_wheel_event(&mut self, dx: f32, dy: f32) {
@@ -231,15 +251,18 @@ impl<S: GameState> EventHandler for WindowRunner<S> {
     }
 
     fn mouse_button_down_event(&mut self, button: MouseButton, x: f32, y: f32) {
-        self.input.on_mouse_button_down(button, x, y);
+        let (lx, ly) = self.to_logical_coords(x, y);
+        self.input.on_mouse_button_down(button, lx, ly);
     }
 
     fn mouse_button_up_event(&mut self, button: MouseButton, x: f32, y: f32) {
-        self.input.on_mouse_button_up(button, x, y);
+        let (lx, ly) = self.to_logical_coords(x, y);
+        self.input.on_mouse_button_up(button, lx, ly);
     }
 
     fn touch_event(&mut self, phase: TouchPhase, id: u64, x: f32, y: f32) {
-        self.input.on_touch(phase, id, x, y);
+        let (lx, ly) = self.to_logical_coords(x, y);
+        self.input.on_touch(phase, id, lx, ly);
     }
 
     fn window_minimized_event(&mut self) {
