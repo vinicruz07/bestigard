@@ -55,32 +55,31 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Prepare Android crate metadata for cargo-quad-apk
+      - name: Prepare root package manifest for cargo-quad-apk
         run: |
-          cat > crates/mobile_entry/Cargo.toml << 'EOF'
+          mkdir -p src assets
+          cp crates/mobile_entry/src/main.rs src/main.rs
+          cat > Cargo.toml << 'EOF'
           [package]
-          name = "mobile_entry"
-          version.workspace = true
-          edition.workspace = true
-          license.workspace = true
+          name = "bestigard"
+          version = "0.1.0"
+          edition = "2021"
 
           [dependencies]
-          game_core = { path = "../game_core" }
-          engine = { path = "../engine" }
+          game_core = { path = "crates/game_core" }
+          engine = { path = "crates/engine" }
+
+          [profile.release]
+          opt-level = 3
+          lto = true
+          codegen-units = 1
+          panic = "abort"
 
           [package.metadata.android]
           package_name = "com.bestigard.game"
           label = "Bestigard - Santuario das Bestas"
-          assets = "../../assets"
-          res = "../../platform/android/res"
-          android_version = 29
-          target_sdk_version = 29
-          min_sdk_version = 24
+          assets = "assets"
           build_targets = ["aarch64-linux-android", "armv7-linux-androideabi"]
-
-          [package.metadata.android.activity_attributes]
-          "android:screenOrientation" = "portrait"
-          "android:exported" = "true"
           EOF
 
       - name: Build Android APK via notfl3/cargo-apk Docker image
@@ -90,18 +89,24 @@ jobs:
             -w /root/src \
             notfl3/cargo-apk \
             bash -c '
-              set -e
+              set -ex
               rustup update stable
               rustup default stable
               rustup target add aarch64-linux-android armv7-linux-androideabi
+              find / -name "libgcc.a" 2>/dev/null | while read f; do
+                dir=$(dirname "$f")
+                if [ ! -f "$dir/libunwind.a" ]; then
+                  echo "INPUT(-lgcc)" > "$dir/libunwind.a"
+                fi
+              done
               rm -f Cargo.lock
-              cargo quad-apk build -p mobile_entry --release || (cd crates/mobile_entry && cargo quad-apk build --release)
+              RUST_BACKTRACE=1 cargo quad-apk build --release
             '
 
       - name: Stage Android Release APK
         run: |
           mkdir -p dist
-          APK_PATH=$(find target crates -name "*.apk" | head -n 1)
+          APK_PATH=$(find target -name "*.apk" | head -n 1)
           echo "Found APK at: $APK_PATH"
           cp "$APK_PATH" dist/bestigard-v0.0.0.1-android.apk
           ls -lh dist/bestigard-v0.0.0.1-android.apk
@@ -157,6 +162,6 @@ jobs:
             ### ✨ Recursos Incluídos na `v0.0.0.1`:
             - Mapa isométrico interativo com habitats elementais, fazendas de comida e Ninho de Incubação (*Hatchery*).
             - Cruzamento genético determinístico (*Breeding*) e evolução de criaturas com sprites procedurais.
-            - Arena de Combate Elemental 3v3 em turnos com multiplicadores elementais e recompensas.
+            - Arena de Combate Elemental 3v3 em turnos com recompensas e multiplicadores elementais.
             - Áudio procedural em tempo real (BGM de santuário, tema de batalha, fanfarra de vitória e 14 efeitos sonoros).
             - Salvamento automático atômico (`.json` + `.bak`) e cálculo de recompensas offline (*Welcome Back Modal*).

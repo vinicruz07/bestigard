@@ -1,0 +1,1 @@
+# Diretório de assets estáticos empacotados no APK (com fallback procedural embarcado em crates/engine/src/assets.rs)

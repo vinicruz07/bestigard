@@ -2887,6 +2887,12 @@ impl GameState for BestigardGame {
     }
 }
 
+#[cfg(target_os = "android")]
+#[no_mangle]
+pub extern "C" fn quad_main() {
+    main();
+}
+
 fn main() {
     let args: Vec<String> = std::env::args().collect();
     let force_cli = args.iter().any(|arg| arg == "--cli" || arg == "--test-suite");
