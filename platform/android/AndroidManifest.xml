@@ -1,0 +1,49 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    package="com.bestigard.game"
+    android:versionCode="1"
+    android:versionName="0.1.0">
+
+    <!-- SDK compatível com Android 7.0 (API 24) até Android 14+ (API 34) -->
+    <uses-sdk
+        android:minSdkVersion="24"
+        android:targetSdkVersion="34" />
+
+    <!-- Exige suporte a OpenGL ES 3.0 / 2.0 e tela sensível ao toque multi-touch -->
+    <uses-feature
+        android:glEsVersion="0x00030000"
+        android:required="true" />
+    <uses-feature
+        android:name="android.hardware.touchscreen"
+        android:required="true" />
+    <uses-feature
+        android:name="android.hardware.touchscreen.multitouch"
+        android:required="true" />
+
+    <application
+        android:allowBackup="true"
+        android:hasCode="false"
+        android:label="Bestigard - Santuario das Bestas"
+        android:theme="@android:style/Theme.NoTitleBar.Fullscreen">
+
+        <activity
+            android:name="android.app.NativeActivity"
+            android:configChanges="orientation|screenSize|screenLayout|keyboardHidden"
+            android:exported="true"
+            android:label="Bestigard - Santuario das Bestas"
+            android:launchMode="singleTask"
+            android:screenOrientation="portrait">
+
+            <!-- Nome da biblioteca nativa compilada pelo crate mobile_entry -->
+            <meta-data
+                android:name="android.app.lib_name"
+                android:value="mobile_entry" />
+
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity>
+    </application>
+</manifest>
+

@@ -7,3 +7,31 @@ license.workspace = true
 [dependencies]
 game_core = { path = "../game_core" }
 engine = { path = "../engine" }
+
+[package.metadata.android]
+package = "com.bestigard.game"
+label = "Bestigard - Santuario das Bestas"
+assets = "../../assets"
+res = "../../platform/android/res"
+build_targets = ["aarch64-linux-android", "armv7-linux-androideabi", "x86_64-linux-android"]
+
+[package.metadata.android.sdk]
+min_sdk_version = 24
+target_sdk_version = 34
+compile_sdk_version = 34
+
+[package.metadata.android.application]
+label = "Bestigard - Santuario das Bestas"
+theme = "@android:style/Theme.NoTitleBar.Fullscreen"
+
+[package.metadata.android.application.activity]
+screen_orientation = "portrait"
+config_changes = "orientation|screenSize|screenLayout|keyboardHidden"
+
+[[package.metadata.android.uses_feature]]
+name = "android.hardware.touchscreen"
+required = true
+
+[[package.metadata.android.uses_feature]]
+name = "android.hardware.touchscreen.multitouch"
+required = true

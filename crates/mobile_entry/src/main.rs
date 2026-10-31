@@ -8,7 +8,7 @@ use engine::{
     TextureAtlas, TouchPhase, UiAction, UiButton, UiColor, UiManager, UiModal, UiProgressBar,
     PersistenceManager, PlatformPaths, TextureId, WindowRunner,
     AssetLoadState, AssetLoader, AssetRequestKind, AssetSource, RgbaImage,
-    AudioOutputDriver, ProceduralSynthesizer,
+    AudioOutputDriver, ProceduralSynthesizer, ApkPackagingValidator,
 };
 use game_core::{
     BattleOutcome, BattleSession, Combatant, CropCatalog, ElementRegistry, ElementalChart,
@@ -2889,7 +2889,7 @@ impl GameState for BestigardGame {
 
 fn main() {
     let args: Vec<String> = std::env::args().collect();
-    let run_window_mode = args.iter().any(|arg| arg == "--window" || arg == "--gui");
+    let run_window_mode = cfg!(target_os = "android") || args.iter().any(|arg| arg == "--window" || arg == "--gui");
 
     let config = EngineConfig {
         title: "Bestigard - Santuario das Bestas".to_string(),
@@ -3622,6 +3622,37 @@ fn main() {
     assert!(!state.ui.is_modal_open());
 
     println!("\n>> Menu de Opcoes (SettingsModal) e Dialogo de Retorno Offline validados com 100% de sucesso! <<");
+
+    println!("\n--- PIPELINE DE BUILD ANDROID (CARGO-APK / NDK) & EMPACOTAMENTO (PASSO 6.5) ---");
+    println!("1. Validando manifesto Android, metadados cargo-apk, guia de publicacao e icone de lancador...");
+    let apk_report = ApkPackagingValidator::verify_workspace_apk_pipeline(
+        std::path::Path::new("platform/android/AndroidManifest.xml"),
+        std::path::Path::new("crates/mobile_entry/Cargo.toml"),
+        std::path::Path::new("docs/build_mobile.md"),
+        std::path::Path::new("platform/android/res/mipmap-hdpi/ic_launcher.png"),
+    )
+    .expect("Android APK pipeline validation should succeed");
+
+    assert_eq!(apk_report.package_name, "com.bestigard.game");
+    assert_eq!(apk_report.min_sdk, 24);
+    assert_eq!(apk_report.target_sdk, 34);
+    assert_eq!(apk_report.screen_orientation, "portrait");
+    assert!(apk_report.fullscreen_theme);
+    assert_eq!(apk_report.native_lib_name, "mobile_entry");
+    assert!(apk_report.icon_png_bytes > 100);
+    assert!(std::path::Path::new("platform/android/res/mipmap-hdpi/ic_launcher.png").exists());
+    println!(
+        "Pipeline APK verificado: Pacote='{}', SDK={}..{}, Orientacao='{}', Fullscreen={}, Targets={:?}, Icone={} bytes PNG!",
+        apk_report.package_name,
+        apk_report.min_sdk,
+        apk_report.target_sdk,
+        apk_report.screen_orientation,
+        apk_report.fullscreen_theme,
+        apk_report.target_abis,
+        apk_report.icon_png_bytes
+    );
+
+    println!("\n>> Pipeline Android (AndroidManifest.xml, cargo-apk, NDK e Guia Mobile) validado com 100% de sucesso! <<");
     println!(
         "\n==> Dica: Para rodar em janela nativa desktop interativa (OpenGL/Vulkan), execute:"
     );
