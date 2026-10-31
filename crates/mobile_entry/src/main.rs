@@ -13,7 +13,7 @@ use engine::{
 use game_core::{
     BattleOutcome, BattleSession, Combatant, CropCatalog, ElementRegistry, ElementalChart,
     HabitatCatalog, IncubationSpeedModifier, MilestoneCatalog, ModifierSource, ObstacleKind,
-    SanctuaryWorld, GrowthStage, SpeciesCatalog, SaveError, FARM_BUILD_COST_GOLD,
+    SanctuaryWorld, GrowthStage, SpeciesCatalog, SaveError, OfflineProgressReport, FARM_BUILD_COST_GOLD,
 };
 
 /// Estrutura que o jogador está posicionando no modo de construção.
@@ -81,6 +81,10 @@ pub struct BestigardGame {
     pub asset_loader: AssetLoader,
     pub atlas_image: RgbaImage,
     pub gpu_atlas_texture: Option<TextureId>,
+    pub is_fullscreen: bool,
+    pub pending_fullscreen_change: Option<bool>,
+    pub last_save_feedback: Option<String>,
+    pub last_offline_report: Option<OfflineProgressReport>,
     frames_rendered: u64,
     ticks_processed: u64,
 }
@@ -161,10 +165,19 @@ impl BestigardGame {
             asset_loader,
             atlas_image,
             gpu_atlas_texture: None,
+            is_fullscreen: false,
+            pending_fullscreen_change: None,
+            last_save_feedback: None,
+            last_offline_report: offline_report.clone(),
             frames_rendered: 0,
             ticks_processed: 0,
         };
         game.configure_hud_buttons();
+        if let Some(ref report) = offline_report {
+            if report.elapsed_applied_secs > 0.0 {
+                game.open_offline_welcome_modal(report);
+            }
+        }
         game
     }
 
@@ -209,6 +222,11 @@ impl BestigardGame {
         self.ui.add_global_button(
             UiButton::new("btn_open_arena", Rect::new(948.0, 24.0, 95.0, 56.0), "ARENA")
                 .with_colors(UiColor::BTN_DANGER, Color::WHITE)
+                .with_scale(1.6),
+        );
+        self.ui.add_global_button(
+            UiButton::new("btn_open_settings", Rect::new(910.0, 96.0, 145.0, 48.0), "OPCOES")
+                .with_colors(UiColor::BTN_SECONDARY, UiColor::GOLD_FILL)
                 .with_scale(1.6),
         );
     }
@@ -1610,6 +1628,280 @@ impl BestigardGame {
 
         self.ui.open_modal(modal);
     }
+
+    /// Abre o modal de Opções e Configurações (controle de volumes Master/SFX/BGM, salvamento manual, tela cheia e créditos).
+    pub fn open_settings_modal(&mut self) {
+        let mut modal = UiModal::new(
+            "modal_settings",
+            "OPCOES E CONFIGURACOES",
+            Rect::new(120.0, 220.0, 840.0, 920.0),
+        );
+
+        modal.add_text(
+            "CONTROLES DE AUDIO EM TEMPO REAL:",
+            160.0,
+            280.0,
+            1.8,
+            UiColor::GOLD_ACCENT,
+        );
+
+        // 1. Volume Master
+        let master_vol = self.audio.master_volume();
+        let master_muted = self.audio.is_master_muted();
+        modal.add_text(
+            format!(
+                "VOLUME GERAL (MASTER): {:.0}% {}",
+                master_vol * 100.0,
+                if master_muted { "[MUDO]" } else { "" }
+            ),
+            160.0,
+            315.0,
+            1.6,
+            Color::WHITE,
+        );
+        modal.add_progress_bar(UiProgressBar::new(
+            Rect::new(160.0, 345.0, 420.0, 28.0),
+            if master_muted { 0.0 } else { master_vol },
+            UiColor::GOLD_FILL,
+        ));
+        modal.add_button(
+            UiButton::new("settings_vol:master_down", Rect::new(600.0, 335.0, 80.0, 44.0), "-")
+                .with_colors(UiColor::BTN_SECONDARY, Color::WHITE)
+                .with_scale(2.0),
+        );
+        modal.add_button(
+            UiButton::new("settings_vol:master_up", Rect::new(690.0, 335.0, 80.0, 44.0), "+")
+                .with_colors(UiColor::BTN_PRIMARY, Color::WHITE)
+                .with_scale(2.0),
+        );
+        modal.add_button(
+            UiButton::new(
+                "settings_mute:master",
+                Rect::new(780.0, 335.0, 140.0, 44.0),
+                if master_muted { "ATIVAR" } else { "MUDO" },
+            )
+            .with_colors(
+                if master_muted { UiColor::BTN_DANGER } else { UiColor::BTN_ACCENT },
+                Color::WHITE,
+            )
+            .with_scale(1.6),
+        );
+
+        // 2. Volume SFX
+        let sfx_vol = self.audio.sfx_volume();
+        let sfx_muted = self.audio.is_sfx_muted();
+        modal.add_text(
+            format!(
+                "EFEITOS SONOROS (SFX): {:.0}% {}",
+                sfx_vol * 100.0,
+                if sfx_muted { "[MUDO]" } else { "" }
+            ),
+            160.0,
+            415.0,
+            1.6,
+            Color::WHITE,
+        );
+        modal.add_progress_bar(UiProgressBar::new(
+            Rect::new(160.0, 445.0, 420.0, 28.0),
+            if sfx_muted { 0.0 } else { sfx_vol },
+            UiColor::XP_FILL,
+        ));
+        modal.add_button(
+            UiButton::new("settings_vol:sfx_down", Rect::new(600.0, 435.0, 80.0, 44.0), "-")
+                .with_colors(UiColor::BTN_SECONDARY, Color::WHITE)
+                .with_scale(2.0),
+        );
+        modal.add_button(
+            UiButton::new("settings_vol:sfx_up", Rect::new(690.0, 435.0, 80.0, 44.0), "+")
+                .with_colors(UiColor::BTN_PRIMARY, Color::WHITE)
+                .with_scale(2.0),
+        );
+        modal.add_button(
+            UiButton::new(
+                "settings_mute:sfx",
+                Rect::new(780.0, 435.0, 140.0, 44.0),
+                if sfx_muted { "ATIVAR" } else { "MUDO" },
+            )
+            .with_colors(
+                if sfx_muted { UiColor::BTN_DANGER } else { UiColor::BTN_ACCENT },
+                Color::WHITE,
+            )
+            .with_scale(1.6),
+        );
+
+        // 3. Volume BGM
+        let bgm_vol = self.audio.bgm_volume();
+        let bgm_muted = self.audio.is_bgm_muted();
+        modal.add_text(
+            format!(
+                "MUSICA DE FUNDO (BGM): {:.0}% {}",
+                bgm_vol * 100.0,
+                if bgm_muted { "[MUDO]" } else { "" }
+            ),
+            160.0,
+            515.0,
+            1.6,
+            Color::WHITE,
+        );
+        modal.add_progress_bar(UiProgressBar::new(
+            Rect::new(160.0, 545.0, 420.0, 28.0),
+            if bgm_muted { 0.0 } else { bgm_vol },
+            Color::rgb(0.45, 0.90, 0.55),
+        ));
+        modal.add_button(
+            UiButton::new("settings_vol:bgm_down", Rect::new(600.0, 535.0, 80.0, 44.0), "-")
+                .with_colors(UiColor::BTN_SECONDARY, Color::WHITE)
+                .with_scale(2.0),
+        );
+        modal.add_button(
+            UiButton::new("settings_vol:bgm_up", Rect::new(690.0, 535.0, 80.0, 44.0), "+")
+                .with_colors(UiColor::BTN_PRIMARY, Color::WHITE)
+                .with_scale(2.0),
+        );
+        modal.add_button(
+            UiButton::new(
+                "settings_mute:bgm",
+                Rect::new(780.0, 535.0, 140.0, 44.0),
+                if bgm_muted { "ATIVAR" } else { "MUDO" },
+            )
+            .with_colors(
+                if bgm_muted { UiColor::BTN_DANGER } else { UiColor::BTN_ACCENT },
+                Color::WHITE,
+            )
+            .with_scale(1.6),
+        );
+
+        // 4. Alternância Tela Cheia / Janela
+        let fs_label = if self.is_fullscreen {
+            "EXIBICAO: TELA CHEIA (TOQUE PARA JANELA)"
+        } else {
+            "EXIBICAO: JANELA (TOQUE PARA TELA CHEIA)"
+        };
+        modal.add_button(
+            UiButton::new("btn_settings_fullscreen", Rect::new(160.0, 625.0, 760.0, 58.0), fs_label)
+                .with_colors(UiColor::BTN_ACCENT, Color::WHITE)
+                .with_scale(1.7),
+        );
+
+        // 5. Botão de Salvamento Manual Forçado
+        modal.add_button(
+            UiButton::new(
+                "btn_settings_save",
+                Rect::new(160.0, 705.0, 760.0, 64.0),
+                "SALVAR JOGO MANUALMENTE AGORA",
+            )
+            .with_colors(UiColor::BTN_PRIMARY, Color::WHITE)
+            .with_scale(1.9),
+        );
+
+        if let Some(ref feedback) = self.last_save_feedback {
+            modal.add_text(
+                feedback.clone(),
+                160.0,
+                785.0,
+                1.6,
+                Color::rgb(0.4, 0.95, 0.45),
+            );
+        } else {
+            modal.add_text(
+                format!(
+                    "SAVES AUTOMATICOS/MANUAIS NA SESSAO: {}",
+                    self.persistence.save_counter()
+                ),
+                160.0,
+                785.0,
+                1.5,
+                UiColor::GOLD_FILL,
+            );
+        }
+
+        // 6. Versão e Créditos
+        modal.add_text(
+            format!(
+                "VERSAO CORE: v{} | ENGINE: 100% SAFE RUST",
+                game_core::core_version()
+            ),
+            160.0,
+            845.0,
+            1.5,
+            Color::rgb(0.75, 0.85, 1.0),
+        );
+        modal.add_text(
+            "CREDITOS: BESTIGARD SANCTUARY TEAM - DESKTOP & MOBILE",
+            160.0,
+            880.0,
+            1.5,
+            UiColor::GOLD_ACCENT,
+        );
+
+        self.ui.open_modal(modal);
+    }
+
+    /// Abre o diálogo comemorativo de retorno quando há progresso offline acumulado.
+    pub fn open_offline_welcome_modal(&mut self, report: &OfflineProgressReport) {
+        let mut modal = UiModal::new(
+            "modal_offline_welcome",
+            "BEM-VINDO DE VOLTA!",
+            Rect::new(140.0, 360.0, 800.0, 600.0),
+        );
+
+        modal.add_text(
+            "ENQUANTO VOCE ESTAVA FORA, SEU SANTUARIO PROSPEROU!",
+            180.0,
+            440.0,
+            1.7,
+            UiColor::GOLD_ACCENT,
+        );
+        modal.add_text(
+            format!(
+                "TEMPO AUSENTE PROCESSADO: {:.0} SEGUNDOS",
+                report.elapsed_applied_secs
+            ),
+            180.0,
+            490.0,
+            1.6,
+            Color::WHITE,
+        );
+        modal.add_text(
+            format!("+ {} OURO GERADO NOS HABITATS", report.gold_generated),
+            180.0,
+            550.0,
+            1.9,
+            UiColor::GOLD_FILL,
+        );
+        modal.add_text(
+            format!(
+                "+ {} FAZENDA(S) MATURADA(S) PARA COLHEITA",
+                report.farms_matured
+            ),
+            180.0,
+            605.0,
+            1.7,
+            Color::rgb(0.45, 0.95, 0.45),
+        );
+        modal.add_text(
+            format!(
+                "+ {} OVO(S) PRONTO(S) PARA ECLODIR NO NINHO",
+                report.eggs_ready
+            ),
+            180.0,
+            660.0,
+            1.7,
+            UiColor::XP_FILL,
+        );
+
+        modal.add_button(
+            UiButton::new(
+                "btn_offline_claim",
+                Rect::new(240.0, 820.0, 600.0, 72.0),
+                "RECOLHER E CONTINUAR JORNADA",
+            )
+            .with_colors(UiColor::BTN_PRIMARY, Color::WHITE)
+            .with_scale(1.9),
+        );
+
+        self.ui.open_modal(modal);
+    }
 }
 
 impl Default for BestigardGame {
@@ -2019,6 +2311,10 @@ impl GameState for BestigardGame {
         let _ = self.audio_driver.step_audio(dt, &mut self.audio);
     }
 
+    fn take_fullscreen_request(&mut self) -> Option<bool> {
+        self.pending_fullscreen_change.take()
+    }
+
 
     fn on_pause(&mut self) {
         println!("Bestigard pausado (background mobile) -> Executando auto-save atômico...");
@@ -2410,6 +2706,98 @@ impl GameState for BestigardGame {
                                 Err(e) => println!("Bestiário: Erro ao resgatar marco '{}': {}", m_id, e),
                             }
                             self.open_bestiary_modal();
+                        }
+                        "btn_open_settings" => {
+                            self.audio.play_sound(SoundCue::UiClick);
+                            self.last_save_feedback = None;
+                            self.open_settings_modal();
+                        }
+                        "settings_vol:master_down" => {
+                            let v = (self.audio.master_volume() - 0.20).clamp(0.0, 1.0);
+                            self.audio.set_master_volume(v);
+                            self.audio.play_sound(SoundCue::UiClick);
+                            self.open_settings_modal();
+                        }
+                        "settings_vol:master_up" => {
+                            let v = (self.audio.master_volume() + 0.20).clamp(0.0, 1.0);
+                            self.audio.set_master_volume(v);
+                            self.audio.play_sound(SoundCue::UiClick);
+                            self.open_settings_modal();
+                        }
+                        "settings_mute:master" => {
+                            let m = !self.audio.is_master_muted();
+                            self.audio.set_master_muted(m);
+                            self.audio.play_sound(SoundCue::UiClick);
+                            self.open_settings_modal();
+                        }
+                        "settings_vol:sfx_down" => {
+                            let v = (self.audio.sfx_volume() - 0.20).clamp(0.0, 1.0);
+                            self.audio.set_sfx_volume(v);
+                            self.audio.play_sound(SoundCue::UiClick);
+                            self.open_settings_modal();
+                        }
+                        "settings_vol:sfx_up" => {
+                            let v = (self.audio.sfx_volume() + 0.20).clamp(0.0, 1.0);
+                            self.audio.set_sfx_volume(v);
+                            self.audio.play_sound(SoundCue::UiClick);
+                            self.open_settings_modal();
+                        }
+                        "settings_mute:sfx" => {
+                            let m = !self.audio.is_sfx_muted();
+                            self.audio.set_sfx_muted(m);
+                            self.audio.play_sound(SoundCue::UiClick);
+                            self.open_settings_modal();
+                        }
+                        "settings_vol:bgm_down" => {
+                            let v = (self.audio.bgm_volume() - 0.20).clamp(0.0, 1.0);
+                            self.audio.set_bgm_volume(v);
+                            self.audio.play_sound(SoundCue::UiClick);
+                            self.open_settings_modal();
+                        }
+                        "settings_vol:bgm_up" => {
+                            let v = (self.audio.bgm_volume() + 0.20).clamp(0.0, 1.0);
+                            self.audio.set_bgm_volume(v);
+                            self.audio.play_sound(SoundCue::UiClick);
+                            self.open_settings_modal();
+                        }
+                        "settings_mute:bgm" => {
+                            let m = !self.audio.is_bgm_muted();
+                            self.audio.set_bgm_muted(m);
+                            self.audio.play_sound(SoundCue::UiClick);
+                            self.open_settings_modal();
+                        }
+                        "btn_settings_fullscreen" => {
+                            self.is_fullscreen = !self.is_fullscreen;
+                            self.pending_fullscreen_change = Some(self.is_fullscreen);
+                            self.audio.play_sound(SoundCue::UiClick);
+                            println!(
+                                "Opções: Modo de exibição alterado para {}",
+                                if self.is_fullscreen { "TELA CHEIA" } else { "JANELA" }
+                            );
+                            self.open_settings_modal();
+                        }
+                        "btn_settings_save" => {
+                            match self.save_game() {
+                                Ok(path) => {
+                                    self.audio.play_sound(SoundCue::MilestoneClaim);
+                                    self.last_save_feedback = Some(format!(
+                                        "JOGO SALVO COM SUCESSO! (SAVE #{})",
+                                        self.persistence.save_counter()
+                                    ));
+                                    println!("Opções: Jogo salvo manualmente em {:?}", path);
+                                }
+                                Err(e) => {
+                                    self.last_save_feedback = Some(format!("ERRO AO SALVAR: {}", e));
+                                    eprintln!("Opções: Falha no save manual: {}", e);
+                                }
+                            }
+                            self.open_settings_modal();
+                        }
+                        "btn_offline_claim" => {
+                            self.audio.play_sound(SoundCue::GoldCollect);
+                            self.last_offline_report = None;
+                            self.ui.close_modal();
+                            println!("UI: Progresso offline comemorado e confirmado pelo jogador!");
                         }
                         _ => {}
                     }
@@ -3180,6 +3568,60 @@ fn main() {
     );
 
     println!("\n>> Driver Fisico de Audio e Sintetizador Procedural validados com 100% de sucesso! <<");
+
+    println!("\n--- MENU DE OPCOES & DIALOGO DE RETORNO OFFLINE (PASSO 6.4) ---");
+    println!("1. Tocando no botao [OPCOES] no HUD (pos: 980, 120) para abrir SettingsModal...");
+    tap_at(state, 980.0, 120.0);
+    assert!(state.ui.is_modal_open());
+    assert_eq!(state.ui.active_modal.as_ref().unwrap().id, "modal_settings");
+    println!("SettingsModal aberto com sucesso!");
+
+    println!("2. Ajustando volumes Master (-20%), SFX (-20%) e mutando BGM pelos botoes interativos...");
+    tap_at(state, 640.0, 355.0); // settings_vol:master_down
+    assert!((state.audio.master_volume() - 0.80).abs() < 1e-4);
+    tap_at(state, 640.0, 455.0); // settings_vol:sfx_down
+    assert!((state.audio.sfx_volume() - 0.80).abs() < 1e-4);
+    tap_at(state, 850.0, 555.0); // settings_mute:bgm
+    assert!(state.audio.is_bgm_muted());
+    println!(
+        "Volumes atualizados em tempo real: Master={:.0}%, SFX={:.0}%, BGM Muted={}",
+        state.audio.master_volume() * 100.0,
+        state.audio.sfx_volume() * 100.0,
+        state.audio.is_bgm_muted()
+    );
+    // Restaura volumes padrao
+    tap_at(state, 730.0, 355.0); // settings_vol:master_up
+    tap_at(state, 730.0, 455.0); // settings_vol:sfx_up
+    tap_at(state, 850.0, 555.0); // settings_mute:bgm (unmute)
+
+    println!("3. Testando alternancia de Modo Tela Cheia / Janela e Salvamento Manual Forcado...");
+    assert!(!state.is_fullscreen);
+    tap_at(state, 500.0, 650.0); // btn_settings_fullscreen
+    assert!(state.is_fullscreen);
+    assert_eq!(state.take_fullscreen_request(), Some(true));
+    let saves_before = state.persistence.save_counter();
+    tap_at(state, 500.0, 735.0); // btn_settings_save
+    assert_eq!(state.persistence.save_counter(), saves_before + 1);
+    assert!(state.last_save_feedback.as_deref().unwrap_or("").contains("JOGO SALVO COM SUCESSO"));
+    println!("Feedback visual de salvamento confirmado: '{}'", state.last_save_feedback.as_deref().unwrap());
+    state.ui.close_modal();
+
+    println!("4. Testando OfflineWelcomeModal (dialogo comemorativo de retorno offline)...");
+    let simulated_report = state.world.apply_offline_progress(3600.0, &state.catalog, &state.habitats_catalog);
+    state.open_offline_welcome_modal(&simulated_report);
+    assert!(state.ui.is_modal_open());
+    assert_eq!(state.ui.active_modal.as_ref().unwrap().id, "modal_offline_welcome");
+    println!(
+        "OfflineWelcomeModal exibido (+{:.0}s ausente -> +{} ouro, {} fazendas, {} ovos)!",
+        simulated_report.elapsed_applied_secs,
+        simulated_report.gold_generated,
+        simulated_report.farms_matured,
+        simulated_report.eggs_ready
+    );
+    tap_at(state, 540.0, 855.0); // btn_offline_claim
+    assert!(!state.ui.is_modal_open());
+
+    println!("\n>> Menu de Opcoes (SettingsModal) e Dialogo de Retorno Offline validados com 100% de sucesso! <<");
     println!(
         "\n==> Dica: Para rodar em janela nativa desktop interativa (OpenGL/Vulkan), execute:"
     );

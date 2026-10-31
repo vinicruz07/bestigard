@@ -180,7 +180,11 @@ impl<S: GameState> EventHandler for WindowRunner<S> {
         // Avança simulação e lógica com delta time real
         // Avança simulação e lógica com delta time real
         self.app.step(raw_dt);
+        self.app.step(raw_dt);
         self.app.state_mut().step_audio_driver(raw_dt);
+        if let Some(fullscreen) = self.app.state_mut().take_fullscreen_request() {
+            miniquad::window::set_fullscreen(fullscreen);
+        }
     }
 
     fn draw(&mut self) {

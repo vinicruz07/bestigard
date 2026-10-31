@@ -40,7 +40,13 @@ pub trait GameState {
     fn on_atlas_uploaded(&mut self, _texture_id: TextureId) {}
 
     /// Avança o driver físico de saída de áudio pelo delta time do frame.
+    /// Avança o driver físico de saída de áudio pelo delta time do frame.
     fn step_audio_driver(&mut self, _dt: f32) {}
+
+    /// Retorna solicitação pendente de alternância de tela cheia (se houver).
+    fn take_fullscreen_request(&mut self) -> Option<bool> {
+        None
+    }
 
     /// Disparado quando o jogo perde foco ou é minimizado (ciclo de vida Android/iOS).
     fn on_pause(&mut self) {}
