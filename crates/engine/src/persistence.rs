@@ -77,6 +77,7 @@ impl PlatformPaths {
         self.base_dir.join(Self::TEMP_FILENAME)
     }
 
+    #[cfg(not(target_os = "android"))]
     fn resolve_desktop_dir() -> Option<PathBuf> {
         #[cfg(windows)]
         {

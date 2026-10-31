@@ -11,6 +11,9 @@ on:
 permissions:
   contents: write
 
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
 jobs:
   build-windows:
     name: Build Windows Desktop (.exe)
@@ -84,6 +87,7 @@ jobs:
 
       - name: Build Android APK via notfl3/cargo-apk Docker image
         run: |
+          set -o pipefail
           docker run --rm \
             -v "${{ github.workspace }}:/root/src" \
             -w /root/src \
@@ -100,8 +104,17 @@ jobs:
                 fi
               done
               rm -f Cargo.lock
-              RUST_BACKTRACE=1 cargo quad-apk build --release
-            '
+              if ! RUST_BACKTRACE=1 cargo quad-apk build --release; then
+                echo "Fallback: removendo quad_main manual caso cargo-quad-apk ja injete o entrypoint..."
+                sed -i "/#\[no_mangle\]/d" src/main.rs
+                sed -i "/pub extern \"C\" fn quad_main/,+2d" src/main.rs
+                RUST_BACKTRACE=1 cargo quad-apk build --release
+              fi
+            ' 2>&1 | tee android_build.log || {
+              ERR_TAIL=$(tail -n 25 android_build.log | tr '\n' ' ')
+              echo "::error title=Android APK Build Failed::$ERR_TAIL"
+              exit 1
+            }
 
       - name: Stage Android Release APK
         run: |

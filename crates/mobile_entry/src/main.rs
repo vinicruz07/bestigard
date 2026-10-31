@@ -1,5 +1,5 @@
 //! Mobile / Desktop Runner para Bestigard.
-#![forbid(unsafe_code)]
+#![cfg_attr(not(target_os = "android"), forbid(unsafe_code))]
 
 use engine::{
     App, AudioController, AudioEvent, BitmapFont, Camera2D, Color, EngineConfig, GameState,
