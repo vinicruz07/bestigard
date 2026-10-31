@@ -36,7 +36,11 @@ pub trait GameState {
     }
 
     /// Notifica o estado do jogo quando a textura do atlas foi enviada à GPU.
+    /// Notifica o estado do jogo quando a textura do atlas foi enviada à GPU.
     fn on_atlas_uploaded(&mut self, _texture_id: TextureId) {}
+
+    /// Avança o driver físico de saída de áudio pelo delta time do frame.
+    fn step_audio_driver(&mut self, _dt: f32) {}
 
     /// Disparado quando o jogo perde foco ou é minimizado (ciclo de vida Android/iOS).
     fn on_pause(&mut self) {}

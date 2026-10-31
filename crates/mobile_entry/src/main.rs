@@ -8,6 +8,7 @@ use engine::{
     TextureAtlas, TouchPhase, UiAction, UiButton, UiColor, UiManager, UiModal, UiProgressBar,
     PersistenceManager, PlatformPaths, TextureId, WindowRunner,
     AssetLoadState, AssetLoader, AssetRequestKind, AssetSource, RgbaImage,
+    AudioOutputDriver, ProceduralSynthesizer,
 };
 use game_core::{
     BattleOutcome, BattleSession, Combatant, CropCatalog, ElementRegistry, ElementalChart,
@@ -66,6 +67,7 @@ pub struct BestigardGame {
     pub font: BitmapFont,
     pub ui: UiManager,
     pub audio: AudioController,
+    pub audio_driver: AudioOutputDriver,
     pub selected_creature_id: Option<u64>,
     pub selected_habitat_id: Option<u64>,
     pub selected_obstacle_id: Option<u64>,
@@ -145,6 +147,7 @@ impl BestigardGame {
             font,
             ui,
             audio,
+            audio_driver: AudioOutputDriver::default(),
             selected_creature_id: None,
             selected_habitat_id: None,
             selected_obstacle_id: None,
@@ -2012,6 +2015,10 @@ impl GameState for BestigardGame {
         self.gpu_atlas_texture = Some(texture_id);
     }
 
+    fn step_audio_driver(&mut self, dt: f32) {
+        let _ = self.audio_driver.step_audio(dt, &mut self.audio);
+    }
+
 
     fn on_pause(&mut self) {
         println!("Bestigard pausado (background mobile) -> Executando auto-save atômico...");
@@ -3139,6 +3146,40 @@ fn main() {
     );
 
     println!("\n>> AssetLoader Multiplataforma e Atlas Fallback Embutido validados com 100% de sucesso! <<");
+
+    println!("\n--- DRIVER FISICO DE AUDIO & SINTETIZADOR PROCEDURAL (PASSO 6.3) ---");
+    println!("1. Testando sintese procedural ADSR e mixagem polifonica no AudioOutputDriver...");
+    state.audio.stop_music();
+    state.audio.play_music(MusicTrack::SanctuaryTheme, true);
+    state.audio.play_sound(SoundCue::GoldCollect);
+    state.audio.play_sound_with_pitch(SoundCue::CreatureEvolve, 1.15);
+    state.audio.play_sound(SoundCue::CombatVictory);
+    state.step_audio_driver(1.0 / 60.0);
+    assert_eq!(state.audio_driver.bgm_state(), MusicPlaybackState::Playing);
+    assert_eq!(state.audio_driver.active_bgm(), Some(MusicTrack::SanctuaryTheme));
+    assert_eq!(state.audio_driver.active_voice_count(), 4);
+    assert!(state.audio_driver.last_peak_amplitude() > 0.05);
+    println!(
+        "Driver ativo: {} vozes polifonicas, BGM: {:?}, Pico PCM: {:.3}, Amostras geradas: {}",
+        state.audio_driver.active_voice_count(),
+        state.audio_driver.active_bgm().unwrap(),
+        state.audio_driver.last_peak_amplitude(),
+        state.audio_driver.total_samples_rendered()
+    );
+
+    println!("2. Testando geracao de container RIFF/WAV PCM 16-bit em memoria (Safe Rust)...");
+    let sfx_samples = ProceduralSynthesizer::synthesize_sfx(SoundCue::MilestoneClaim, 1.0, state.audio_driver.sample_rate());
+    let wav_blob = ProceduralSynthesizer::encode_wav_pcm16(&sfx_samples, state.audio_driver.sample_rate());
+    assert_eq!(&wav_blob[0..4], b"RIFF");
+    assert_eq!(&wav_blob[8..12], b"WAVE");
+    assert_eq!(wav_blob.len(), 44 + sfx_samples.len() * 2);
+    println!(
+        "Container WAV PCM16 gerado com sucesso ({} amostras -> {} bytes RIFF/WAVE)!",
+        sfx_samples.len(),
+        wav_blob.len()
+    );
+
+    println!("\n>> Driver Fisico de Audio e Sintetizador Procedural validados com 100% de sucesso! <<");
     println!(
         "\n==> Dica: Para rodar em janela nativa desktop interativa (OpenGL/Vulkan), execute:"
     );

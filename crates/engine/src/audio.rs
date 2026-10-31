@@ -177,6 +177,42 @@ impl AudioController {
         self.is_bgm_muted = muted;
     }
 
+    /// Retorna o volume master configurado (0.0 a 1.0).
+    #[inline]
+    pub fn master_volume(&self) -> f32 {
+        self.master_volume
+    }
+
+    /// Retorna o volume de SFX configurado (0.0 a 1.0).
+    #[inline]
+    pub fn sfx_volume(&self) -> f32 {
+        self.sfx_volume
+    }
+
+    /// Retorna o volume de BGM configurado (0.0 a 1.0).
+    #[inline]
+    pub fn bgm_volume(&self) -> f32 {
+        self.bgm_volume
+    }
+
+    /// Retorna se o canal master está silenciado.
+    #[inline]
+    pub fn is_master_muted(&self) -> bool {
+        self.is_master_muted
+    }
+
+    /// Retorna se o canal de SFX está silenciado.
+    #[inline]
+    pub fn is_sfx_muted(&self) -> bool {
+        self.is_sfx_muted
+    }
+
+    /// Retorna se o canal de BGM está silenciado.
+    #[inline]
+    pub fn is_bgm_muted(&self) -> bool {
+        self.is_bgm_muted
+    }
+
     /// Retorna o volume efetivo atual de SFX (levando em conta mute e master volume).
     pub fn effective_sfx_volume(&self) -> f32 {
         if self.is_master_muted || self.is_sfx_muted {

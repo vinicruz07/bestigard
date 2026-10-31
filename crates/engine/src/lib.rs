@@ -5,6 +5,7 @@ pub mod app;
 pub mod assets;
 pub mod atlas;
 pub mod audio;
+pub mod audio_driver;
 pub mod batch;
 pub mod camera;
 pub mod font;
@@ -26,6 +27,10 @@ pub use assets::{
 };
 pub use atlas::{AtlasRegion, TextureAtlas};
 pub use audio::{AudioController, AudioEvent, MusicPlaybackState, MusicTrack, SoundCue};
+pub use audio_driver::{
+    ActiveVoice, AdsrEnvelope, AudioOutputDriver, ProceduralSynthesizer, SynthToneSpec,
+    WaveformKind,
+};
 pub use batch::{BatchStats, GpuSpritePipeline, SpriteBatch, Vertex2D};
 pub use camera::Camera2D;
 pub use font::{BitmapFont, Glyph};

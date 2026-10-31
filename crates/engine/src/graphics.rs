@@ -178,7 +178,9 @@ impl<S: GameState> EventHandler for WindowRunner<S> {
         self.input.clear_events();
 
         // Avança simulação e lógica com delta time real
+        // Avança simulação e lógica com delta time real
         self.app.step(raw_dt);
+        self.app.state_mut().step_audio_driver(raw_dt);
     }
 
     fn draw(&mut self) {
