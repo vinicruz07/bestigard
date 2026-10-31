@@ -189,7 +189,7 @@ impl SpriteBatch {
             dest.bottom_left().into(),
         ];
         // UV unitário para pixel branco de textura padrão
-        let uvs = [[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0]];
+        let uvs = [[0.0, 0.0], [0.0, 0.0], [0.0, 0.0], [0.0, 0.0]];
         let c = [color.r, color.g, color.b, color.a];
         self.push_quad(points, uvs, [c, c, c, c])
     }

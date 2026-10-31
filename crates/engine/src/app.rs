@@ -25,9 +25,18 @@ pub trait GameState {
     }
 
     /// Textura ativa vinculada ao SpriteBatch (opcional, usa textura branca padrão se None).
+    /// Textura ativa vinculada ao SpriteBatch (opcional, usa textura branca padrão se None).
     fn active_texture(&self) -> Option<TextureId> {
         None
     }
+
+    /// Fornece a imagem RGBA8 do atlas caso ainda precise ser enviada à GPU.
+    fn pending_atlas_image(&self) -> Option<&crate::texture::RgbaImage> {
+        None
+    }
+
+    /// Notifica o estado do jogo quando a textura do atlas foi enviada à GPU.
+    fn on_atlas_uploaded(&mut self, _texture_id: TextureId) {}
 
     /// Disparado quando o jogo perde foco ou é minimizado (ciclo de vida Android/iOS).
     fn on_pause(&mut self) {}

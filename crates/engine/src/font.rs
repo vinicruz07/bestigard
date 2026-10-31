@@ -96,6 +96,30 @@ impl BitmapFont {
     }
 
     /// Envia a textura da fonte para a GPU e registra o manipulador `TextureId`.
+    /// Embute os glifos desta fonte dentro de uma imagem de atlas maior em `(offset_x, offset_y)`
+    /// e remapeia as coordenadas UV de todos os caracteres para o espaço normalizado do atlas.
+    pub fn embed_into_atlas(&mut self, atlas_image: &mut RgbaImage, offset_x: u32, offset_y: u32) {
+        atlas_image.blit(&self.texture_image, offset_x, offset_y);
+        let orig_w = self.texture_image.width as f32;
+        let orig_h = self.texture_image.height as f32;
+        let atlas_w = atlas_image.width as f32;
+        let atlas_h = atlas_image.height as f32;
+
+        if atlas_w <= 0.0 || atlas_h <= 0.0 {
+            return;
+        }
+
+        for glyph in self.glyphs.values_mut() {
+            let px_min_x = glyph.uv_min.0 * orig_w + offset_x as f32;
+            let px_min_y = glyph.uv_min.1 * orig_h + offset_y as f32;
+            let px_max_x = glyph.uv_max.0 * orig_w + offset_x as f32;
+            let px_max_y = glyph.uv_max.1 * orig_h + offset_y as f32;
+
+            glyph.uv_min = (px_min_x / atlas_w, px_min_y / atlas_h);
+            glyph.uv_max = (px_max_x / atlas_w, px_max_y / atlas_h);
+        }
+    }
+
     pub fn upload(&mut self, backend: &mut Box<dyn RenderingBackend>) -> TextureId {
         let tex_id = self.texture_image.upload_to_gpu(backend);
         self.texture_id = Some(tex_id);

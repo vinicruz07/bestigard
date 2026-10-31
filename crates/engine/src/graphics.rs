@@ -191,7 +191,15 @@ impl<S: GameState> EventHandler for WindowRunner<S> {
             self.gpu_pipeline = GpuSpritePipeline::new(&mut self.backend, 4096).ok();
         }
 
-        // 3. Submete o SpriteBatch acumulado pelo jogo à GPU
+        // 3. Realiza upload automático do atlas para a GPU se ainda pendente
+        if self.app.state().active_texture().is_none() {
+            if let Some(atlas_img) = self.app.state().pending_atlas_image() {
+                let tex_id = atlas_img.upload_to_gpu(&mut self.backend);
+                self.app.state_mut().on_atlas_uploaded(tex_id);
+            }
+        }
+
+        // 4. Submete o SpriteBatch acumulado pelo jogo à GPU
         if let Some(pipeline) = &mut self.gpu_pipeline {
             let width = self.gfx.viewport.width;
             let height = self.gfx.viewport.height;

@@ -2,6 +2,7 @@
 #![forbid(unsafe_code)]
 
 pub mod app;
+pub mod assets;
 pub mod atlas;
 pub mod audio;
 pub mod batch;
@@ -19,6 +20,10 @@ pub mod time;
 pub mod ui;
 
 pub use app::{App, EngineConfig, GameState};
+pub use assets::{
+    AssetError, AssetLoadRequest, AssetLoadState, AssetLoader, AssetRequestKind, AssetSource,
+    SanctuaryAtlasBundle,
+};
 pub use atlas::{AtlasRegion, TextureAtlas};
 pub use audio::{AudioController, AudioEvent, MusicPlaybackState, MusicTrack, SoundCue};
 pub use batch::{BatchStats, GpuSpritePipeline, SpriteBatch, Vertex2D};

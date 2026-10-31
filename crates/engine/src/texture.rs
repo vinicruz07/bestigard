@@ -144,6 +144,48 @@ impl RgbaImage {
     }
 
     /// Obtém cor do pixel em coordenadas (x, y).
+    /// Define a cor do pixel em coordenadas (x, y) se estiver dentro dos limites da imagem.
+    pub fn set_pixel(&mut self, x: u32, y: u32, color: [u8; 4]) {
+        if x < self.width && y < self.height {
+            let idx = ((y * self.width + x) * 4) as usize;
+            self.pixels[idx] = color[0];
+            self.pixels[idx + 1] = color[1];
+            self.pixels[idx + 2] = color[2];
+            self.pixels[idx + 3] = color[3];
+        }
+    }
+
+    /// Preenche uma região retangular da imagem com uma cor RGBA sólida.
+    pub fn fill_rect(&mut self, rx: u32, ry: u32, rw: u32, rh: u32, color: [u8; 4]) {
+        let max_x = (rx + rw).min(self.width);
+        let max_y = (ry + rh).min(self.height);
+        for y in ry.min(self.height)..max_y {
+            for x in rx.min(self.width)..max_x {
+                self.set_pixel(x, y, color);
+            }
+        }
+    }
+
+    /// Copia outra imagem (`src`) para dentro desta imagem a partir da posição `(dest_x, dest_y)`.
+    pub fn blit(&mut self, src: &RgbaImage, dest_x: u32, dest_y: u32) {
+        for sy in 0..src.height {
+            let dy = dest_y + sy;
+            if dy >= self.height {
+                break;
+            }
+            for sx in 0..src.width {
+                let dx = dest_x + sx;
+                if dx >= self.width {
+                    break;
+                }
+                if let Some(px) = src.get_pixel(sx, sy) {
+                    self.set_pixel(dx, dy, px);
+                }
+            }
+        }
+    }
+
+    /// Obtém cor do pixel em coordenadas (x, y).
     pub fn get_pixel(&self, x: u32, y: u32) -> Option<[u8; 4]> {
         if x >= self.width || y >= self.height {
             return None;

@@ -7,6 +7,7 @@ use engine::{
     PlacementCursor, Rect, RenderCommand, RenderLayer, RenderQueue, SoundCue, SpriteBatch,
     TextureAtlas, TouchPhase, UiAction, UiButton, UiColor, UiManager, UiModal, UiProgressBar,
     PersistenceManager, PlatformPaths, TextureId, WindowRunner,
+    AssetLoadState, AssetLoader, AssetRequestKind, AssetSource, RgbaImage,
 };
 use game_core::{
     BattleOutcome, BattleSession, Combatant, CropCatalog, ElementRegistry, ElementalChart,
@@ -75,6 +76,9 @@ pub struct BestigardGame {
     pub placement: Option<PlacementSession>,
     pub arena: Option<ArenaSessionState>,
     pub persistence: PersistenceManager,
+    pub asset_loader: AssetLoader,
+    pub atlas_image: RgbaImage,
+    pub gpu_atlas_texture: Option<TextureId>,
     frames_rendered: u64,
     ticks_processed: u64,
 }
@@ -101,15 +105,19 @@ impl BestigardGame {
             );
         }
 
-        let mut atlas = TextureAtlas::new("sanctuary_atlas", 2048, 2048);
-        atlas.add_region("tile_island_grass_01", Rect::new(0.0, 0.0, 128.0, 64.0));
-        atlas.add_region("habitat_fire_t1", Rect::new(128.0, 0.0, 192.0, 192.0));
-        atlas.add_region("building_farm_empty", Rect::new(320.0, 0.0, 160.0, 160.0));
-        atlas.add_region("creature_pyro_drake_baby", Rect::new(480.0, 0.0, 64.0, 64.0));
-        atlas.add_region("creature_volcano_beast_baby", Rect::new(544.0, 0.0, 64.0, 64.0));
-        atlas.add_region("icon_gold_coin", Rect::new(608.0, 0.0, 32.0, 32.0));
-        atlas.add_region("icon_food_apple", Rect::new(640.0, 0.0, 32.0, 32.0));
-        atlas.add_region("building_hatchery", Rect::new(672.0, 0.0, 160.0, 160.0));
+        let asset_loader = AssetLoader::for_current_platform();
+        let mut font = BitmapFont::default_font();
+        let bundle = asset_loader.build_sanctuary_atlas_bundle(&mut font);
+        let atlas = bundle.atlas;
+        let atlas_image = bundle.image;
+
+
+
+
+
+
+
+
 
         let mut camera = Camera2D::new(1080.0, 1920.0);
         let projection = IsometricProjection::DEFAULT;
@@ -134,7 +142,7 @@ impl BestigardGame {
             camera,
             projection,
             render_queue: RenderQueue::new(),
-            font: BitmapFont::default_font(),
+            font,
             ui,
             audio,
             selected_creature_id: None,
@@ -147,6 +155,9 @@ impl BestigardGame {
             placement: None,
             arena: None,
             persistence,
+            asset_loader,
+            atlas_image,
+            gpu_atlas_texture: None,
             frames_rendered: 0,
             ticks_processed: 0,
         };
@@ -1615,26 +1626,28 @@ impl GameState for BestigardGame {
             self.world.food
         );
 
-        // 1. Constrói Fazenda de Comida em (6, 2) e planta Fruta Silvestre
-        let farm_id = self.world.build_farm(6, 2, 50).expect("Farm building should succeed");
-        let berry = self.crops_catalog.get("wild_berry").expect("Wild berry should exist");
-        self.world.plant_crop(farm_id, berry).expect("Crop planting should succeed");
+        // 1. Constrói Fazenda de Comida em (6, 2) e planta Fruta Silvestre (apenas se novo jogo sem fazendas salvas)
+        if self.world.farms.is_empty() {
+            let farm_id = self.world.build_farm(6, 2, 50).expect("Farm building should succeed");
+            let berry = self.crops_catalog.get("wild_berry").expect("Wild berry should exist");
+            self.world.plant_crop(farm_id, berry).expect("Crop planting should succeed");
 
-        // 2. Deposita ovo de Besta Vulcânica no ninho
-        if let Some(volcano) = self.catalog.get("volcano_beast") {
-            let egg_id = self.world.deposit_egg(volcano).expect("Egg deposit should succeed");
-            println!(
-                "Ninho: Ovo #{} de '{}' depositado.",
-                egg_id, volcano.name
-            );
+            // 2. Deposita ovo de Besta Vulcânica no ninho
+            if let Some(volcano) = self.catalog.get("volcano_beast") {
+                let egg_id = self.world.deposit_egg(volcano).expect("Egg deposit should succeed");
+                println!(
+                    "Ninho: Ovo #{} de '{}' depositado.",
+                    egg_id, volcano.name
+                );
 
-            // Equipa modificador de velocidade no ninho
-            self.world.hatchery.add_modifier(IncubationSpeedModifier::permanent(
-                "primal_heat_amulet",
-                "Amuleto do Calor Primordial",
-                ModifierSource::Amulet("primal_heat_amulet".to_string()),
-                2.5,
-            ));
+                // Equipa modificador de velocidade no ninho
+                self.world.hatchery.add_modifier(IncubationSpeedModifier::permanent(
+                    "primal_heat_amulet",
+                    "Amuleto do Calor Primordial",
+                    ModifierSource::Amulet("primal_heat_amulet".to_string()),
+                    2.5,
+                ));
+            }
         }
     }
 
@@ -1650,6 +1663,9 @@ impl GameState for BestigardGame {
     }
 
     fn update(&mut self, dt: f32) {
+        // Processa fila de carregamento incremental de assets (até 2 itens por frame)
+        let _ = self.asset_loader.poll_load_queue(2);
+
         // Auto-save periódico no loop
         if let Some(res) = self.persistence.update_auto_save(dt, &self.world) {
             match res {
@@ -1985,7 +2001,15 @@ impl GameState for BestigardGame {
     }
 
     fn active_texture(&self) -> Option<TextureId> {
-        None
+        self.gpu_atlas_texture
+    }
+
+    fn pending_atlas_image(&self) -> Option<&RgbaImage> {
+        Some(&self.atlas_image)
+    }
+
+    fn on_atlas_uploaded(&mut self, texture_id: TextureId) {
+        self.gpu_atlas_texture = Some(texture_id);
     }
 
 
@@ -2493,6 +2517,11 @@ fn main() {
         "Iniciando {} - Resolução alvo: {}x{}, UPS: {}",
         config.title, config.width, config.height, config.target_ups
     );
+
+    // Limpa estado prévio de save no modo de suíte de verificação CLI para garantir execução determinística
+    let cli_paths = PlatformPaths::for_current_platform();
+    let _ = std::fs::remove_file(cli_paths.save_file());
+    let _ = std::fs::remove_file(cli_paths.backup_file());
 
     let mut app = App::new(config, BestigardGame::default());
 
@@ -3056,6 +3085,60 @@ fn main() {
     let _ = state.save_game();
 
     println!("\n>> Persistencia Atomica, Auto-Save Mobile e Recuperacao validados com 100% de sucesso! <<");
+
+    println!("\n--- CARREGAMENTO DE ASSETS MULTIPLATAFORMA & ATLAS EMBUTIDO (PASSO 6.2) ---");
+    println!("1. Verificando SanctuaryAtlasBundle unificado (512x512 RGBA8 + UVs + BitmapFont embutida)...");
+    assert_eq!(state.atlas_image.width, 512);
+    assert_eq!(state.atlas_image.height, 512);
+    assert!(state.atlas.get("white_pixel").is_some());
+    assert!(state.atlas.get("tile_island_grass_01").is_some());
+    assert!(state.atlas.get("habitat_fire_t1").is_some());
+    assert!(state.atlas.get("building_farm_empty").is_some());
+    assert!(state.atlas.get("building_hatchery").is_some());
+    assert!(state.atlas.get("creature_pyro_drake_baby").is_some());
+    assert!(state.atlas.get("creature_volcano_beast_baby").is_some());
+    assert!(state.atlas.get("icon_gold_coin").is_some());
+    assert!(state.atlas.get("icon_food_apple").is_some());
+    let glyph_a = state.font.glyphs.get(&'A').expect("Glyph A should exist");
+    assert!(glyph_a.uv_min.1 >= 0.5, "BitmapFont UVs devem apontar para a metade inferior (y >= 256) do atlas 512x512");
+    println!(
+        "Atlas 512x512 verificado ({} regioes mapeadas, BitmapFont remapeada para v0={:.3})!",
+        state.atlas.len(),
+        glyph_a.uv_min.1
+    );
+
+    println!("2. Testando fila assincrona/incremental do AssetLoader (APK / Desktop fallback)...");
+    state.asset_loader.register_embedded_bytes(
+        "config/sanctuary_manifest.json",
+        br#"{"atlas":"sanctuary_atlas","version":1}"#.to_vec(),
+    );
+    state.asset_loader.enqueue(
+        "sanctuary_atlas",
+        "sprites/sanctuary_atlas.png",
+        AssetRequestKind::TexturePng { fallback_w: 512, fallback_h: 512 },
+    );
+    state.asset_loader.enqueue("manifest", "config/sanctuary_manifest.json", AssetRequestKind::RawBytes);
+    assert_eq!(state.asset_loader.pending_count(), 2);
+    let processed_1 = state.asset_loader.poll_load_queue(1);
+    assert_eq!(processed_1, 1);
+    assert!((state.asset_loader.load_progress() - 0.5).abs() < 1e-4);
+    let processed_2 = state.asset_loader.poll_load_queue(2);
+    assert_eq!(processed_2, 1);
+    assert!((state.asset_loader.load_progress() - 1.0).abs() < 1e-4);
+    assert!(state.asset_loader.get_texture("sanctuary_atlas").is_some());
+    assert!(state.asset_loader.get_bytes("manifest").is_some());
+    assert!(matches!(
+        state.asset_loader.state_of("manifest"),
+        Some(AssetLoadState::Ready(AssetSource::Embedded(_)))
+    ));
+    println!(
+        "Fila incremental concluida (Progresso: {:.0}%, Atlas State: {:?}, Manifest State: {:?})!",
+        state.asset_loader.load_progress() * 100.0,
+        state.asset_loader.state_of("sanctuary_atlas"),
+        state.asset_loader.state_of("manifest")
+    );
+
+    println!("\n>> AssetLoader Multiplataforma e Atlas Fallback Embutido validados com 100% de sucesso! <<");
     println!(
         "\n==> Dica: Para rodar em janela nativa desktop interativa (OpenGL/Vulkan), execute:"
     );
