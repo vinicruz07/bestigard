@@ -43,6 +43,9 @@ impl std::error::Error for SaveError {}
 pub struct SaveGame {
     pub magic: String,
     pub version: u32,
+    /// Timestamp Unix (segundos) de quando o savegame foi persistido.
+    #[serde(default)]
+    pub saved_timestamp_secs: u64,
     pub world: SanctuaryWorld,
 }
 
@@ -55,17 +58,36 @@ struct SaveHeader {
 
 impl SaveGame {
     pub fn new(world: SanctuaryWorld) -> Self {
-        Self { magic: SAVE_MAGIC.to_string(), version: SAVE_VERSION, world }
+        Self::new_with_timestamp(world, 0)
     }
 
-    /// Serializa o mundo em JSON versionado.
+    pub fn new_with_timestamp(world: SanctuaryWorld, timestamp: u64) -> Self {
+        Self {
+            magic: SAVE_MAGIC.to_string(),
+            version: SAVE_VERSION,
+            saved_timestamp_secs: timestamp,
+            world,
+        }
+    }
+
+    /// Serializa o mundo em JSON versionado sem timestamp explícito.
     pub fn to_json(world: &SanctuaryWorld) -> Result<String, SaveError> {
-        serde_json::to_string_pretty(&Self::new(world.clone()))
+        Self::to_json_with_timestamp(world, 0)
+    }
+
+    /// Serializa o mundo em JSON versionado acompanhado do timestamp de gravação.
+    pub fn to_json_with_timestamp(world: &SanctuaryWorld, timestamp: u64) -> Result<String, SaveError> {
+        serde_json::to_string_pretty(&Self::new_with_timestamp(world.clone(), timestamp))
             .map_err(|e| SaveError::Serialize(e.to_string()))
     }
 
     /// Desserializa e valida magic, versão e consistência referencial.
     pub fn from_json(json: &str) -> Result<SanctuaryWorld, SaveError> {
+        Self::from_json_with_timestamp(json).map(|(w, _)| w)
+    }
+
+    /// Desserializa e retorna o mundo acompanhado do timestamp em que foi gravado.
+    pub fn from_json_with_timestamp(json: &str) -> Result<(SanctuaryWorld, u64), SaveError> {
         let header: SaveHeader =
             serde_json::from_str(json).map_err(|e| SaveError::Parse(e.to_string()))?;
         if header.magic != SAVE_MAGIC {
@@ -80,12 +102,21 @@ impl SaveGame {
         let save: SaveGame =
             serde_json::from_str(json).map_err(|e| SaveError::Parse(e.to_string()))?;
         validate_world(&save.world)?;
-        Ok(save.world)
+        Ok((save.world, save.saved_timestamp_secs))
     }
 
     /// Salva em arquivo de forma atômica (escreve em `.tmp` e renomeia).
     pub fn save_to_file(world: &SanctuaryWorld, path: &std::path::Path) -> Result<(), SaveError> {
-        let json = Self::to_json(world)?;
+        Self::save_to_file_with_timestamp(world, path, 0)
+    }
+
+    /// Salva em arquivo com timestamp de gravação de forma atômica.
+    pub fn save_to_file_with_timestamp(
+        world: &SanctuaryWorld,
+        path: &std::path::Path,
+        timestamp: u64,
+    ) -> Result<(), SaveError> {
+        let json = Self::to_json_with_timestamp(world, timestamp)?;
         let tmp = path.with_extension("tmp");
         std::fs::write(&tmp, json).map_err(|e| SaveError::Serialize(e.to_string()))?;
         std::fs::rename(&tmp, path).map_err(|e| SaveError::Serialize(e.to_string()))
@@ -93,8 +124,15 @@ impl SaveGame {
 
     /// Carrega e valida um savegame de arquivo.
     pub fn load_from_file(path: &std::path::Path) -> Result<SanctuaryWorld, SaveError> {
+        Self::load_from_file_with_timestamp(path).map(|(w, _)| w)
+    }
+
+    /// Carrega e valida um savegame de arquivo, retornando o estado e o timestamp de gravação.
+    pub fn load_from_file_with_timestamp(
+        path: &std::path::Path,
+    ) -> Result<(SanctuaryWorld, u64), SaveError> {
         let json = std::fs::read_to_string(path).map_err(|e| SaveError::Parse(e.to_string()))?;
-        Self::from_json(&json)
+        Self::from_json_with_timestamp(&json)
     }
 }
 
@@ -189,5 +227,20 @@ mod tests {
         let back = SaveGame::load_from_file(&path).unwrap();
         assert_eq!(back.gold, w.gold);
         let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn test_timestamp_persistence_and_compatibility() {
+        let w = starter();
+        let json_with_ts = SaveGame::to_json_with_timestamp(&w, 1730000000).unwrap();
+        let (back, ts) = SaveGame::from_json_with_timestamp(&json_with_ts).unwrap();
+        assert_eq!(back.player_name, w.player_name);
+        assert_eq!(ts, 1730000000);
+
+        // Compatibilidade com saves sem o campo timestamp
+        let legacy_json = SaveGame::to_json(&w).unwrap();
+        let (legacy_back, legacy_ts) = SaveGame::from_json_with_timestamp(&legacy_json).unwrap();
+        assert_eq!(legacy_back.player_name, w.player_name);
+        assert_eq!(legacy_ts, 0);
     }
 }

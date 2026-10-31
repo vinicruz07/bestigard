@@ -6,12 +6,12 @@ use engine::{
     InputManager, IsometricProjection, MouseButton, MusicPlaybackState, MusicTrack,
     PlacementCursor, Rect, RenderCommand, RenderLayer, RenderQueue, SoundCue, SpriteBatch,
     TextureAtlas, TouchPhase, UiAction, UiButton, UiColor, UiManager, UiModal, UiProgressBar,
-    TextureId, WindowRunner,
+    PersistenceManager, PlatformPaths, TextureId, WindowRunner,
 };
 use game_core::{
     BattleOutcome, BattleSession, Combatant, CropCatalog, ElementRegistry, ElementalChart,
     HabitatCatalog, IncubationSpeedModifier, MilestoneCatalog, ModifierSource, ObstacleKind,
-    SanctuaryWorld, GrowthStage, SpeciesCatalog, FARM_BUILD_COST_GOLD,
+    SanctuaryWorld, GrowthStage, SpeciesCatalog, SaveError, FARM_BUILD_COST_GOLD,
 };
 
 /// Estrutura que o jogador está posicionando no modo de construção.
@@ -74,6 +74,7 @@ pub struct BestigardGame {
     pub shop_tab: ShopTab,
     pub placement: Option<PlacementSession>,
     pub arena: Option<ArenaSessionState>,
+    pub persistence: PersistenceManager,
     frames_rendered: u64,
     ticks_processed: u64,
 }
@@ -83,8 +84,22 @@ impl BestigardGame {
         let catalog = SpeciesCatalog::with_starter_species();
         let habitats_catalog = HabitatCatalog::with_default_habitats();
 
-        let world = SanctuaryWorld::with_starter_setup("Mestre das Bestas", &catalog, &habitats_catalog)
-            .expect("Starter world setup should succeed");
+        let paths = PlatformPaths::for_current_platform();
+        let persistence = PersistenceManager::new(paths);
+        let (world, offline_report) = persistence.load_or_create(
+            || {
+                SanctuaryWorld::with_starter_setup("Mestre das Bestas", &catalog, &habitats_catalog)
+                    .expect("Starter world setup should succeed")
+            },
+            &catalog,
+            &habitats_catalog,
+        );
+        if let Some(ref report) = offline_report {
+            println!(
+                "Progresso Offline Aplicado (+{:.0}s decorridos): +{} ouro, {} fazendas maturadas, {} ovos prontos!",
+                report.elapsed_applied_secs, report.gold_generated, report.farms_matured, report.eggs_ready
+            );
+        }
 
         let mut atlas = TextureAtlas::new("sanctuary_atlas", 2048, 2048);
         atlas.add_region("tile_island_grass_01", Rect::new(0.0, 0.0, 128.0, 64.0));
@@ -131,11 +146,17 @@ impl BestigardGame {
             shop_tab: ShopTab::Buildings,
             placement: None,
             arena: None,
+            persistence,
             frames_rendered: 0,
             ticks_processed: 0,
         };
         game.configure_hud_buttons();
         game
+    }
+
+    /// Executa salvamento manual imediato do estado atual do santuário.
+    pub fn save_game(&mut self) -> Result<std::path::PathBuf, SaveError> {
+        self.persistence.save_atomic(&self.world)
     }
 
     /// Botões rápidos do HUD Superior (visíveis fora do modo de construção).
@@ -1628,8 +1649,14 @@ impl GameState for BestigardGame {
         );
     }
 
-    fn update(&mut self, _dt: f32) {
-        // Animações e apresentação
+    fn update(&mut self, dt: f32) {
+        // Auto-save periódico no loop
+        if let Some(res) = self.persistence.update_auto_save(dt, &self.world) {
+            match res {
+                Ok(path) => println!("Auto-save periódico executado com sucesso: {:?}", path),
+                Err(err) => eprintln!("Erro no auto-save periódico: {}", err),
+            }
+        }
     }
 
     fn render(&mut self, _alpha: f32) {
@@ -1961,6 +1988,14 @@ impl GameState for BestigardGame {
         None
     }
 
+
+    fn on_pause(&mut self) {
+        println!("Bestigard pausado (background mobile) -> Executando auto-save atômico...");
+        match self.persistence.save_atomic(&self.world) {
+            Ok(p) => println!("Auto-save de ciclo de vida (on_pause) gravado em: {:?}", p),
+            Err(e) => eprintln!("Falha no auto-save de ciclo de vida (on_pause): {}", e),
+        }
+    }
 
     fn on_resume(&mut self) {
         println!("Bestigard retomado (foreground mobile)");
@@ -2988,6 +3023,39 @@ fn main() {
     );
 
     println!("\n>> Pipeline GPU, Renderizacao Dinamica e WindowRunner validados com 100% de sucesso! <<");
+
+    println!("\n--- PERSISTENCIA ATOMICA, AUTO-SAVE & RECUPERACAO (PASSO 6.1) ---");
+    println!("1. Testando salvamento atomico via save_game()...");
+    let save_path = state.save_game().expect("Atomic save should succeed");
+    println!("Savegame atomico gravado com sucesso em: {:?}", save_path);
+    assert!(save_path.exists());
+    assert_eq!(state.persistence.save_counter(), 1);
+
+    println!("2. Testando segundo save e geracao automatica de backup (.bak)...");
+    state.world.gold += 500;
+    let _ = state.save_game().expect("Second save should succeed");
+    assert!(state.persistence.paths().backup_file().exists());
+    assert_eq!(state.persistence.save_counter(), 2);
+    println!("Backup de seguranca (.bak) criado com sucesso!");
+
+    println!("3. Testando auto-save no ciclo de vida (on_pause)...");
+    state.on_pause();
+    assert_eq!(state.persistence.save_counter(), 3);
+    println!("Auto-save de ciclo de vida (on_pause) executado com sucesso!");
+
+    println!("4. Testando recuperacao de backup contra corrupcao do save principal...");
+    // Simula corrupcao no arquivo principal
+    std::fs::write(&save_path, b"CORRUPTED_JSON_DATA").unwrap();
+    let (recovered_world, ts, was_recovered) = state.persistence.load_with_backup_recovery().expect("Recovery should succeed");
+    assert!(was_recovered);
+    assert!(ts > 0);
+    assert_eq!(recovered_world.player_name, state.world.player_name);
+    println!("Recuperacao automatica via .bak validada com 100% de sucesso!");
+
+    // Restaura o save integro
+    let _ = state.save_game();
+
+    println!("\n>> Persistencia Atomica, Auto-Save Mobile e Recuperacao validados com 100% de sucesso! <<");
     println!(
         "\n==> Dica: Para rodar em janela nativa desktop interativa (OpenGL/Vulkan), execute:"
     );
